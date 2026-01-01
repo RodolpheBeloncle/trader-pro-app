@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "stock-analyzer": {
+      "command": "/path/to/your/venv/bin/python",
+      "args": ["-m", "src.infrastructure.mcp.mcp_server"],
+      "cwd": "/path/to/stock-analyzer/backend",
+      "env": {
+        "PYTHONPATH": "/path/to/stock-analyzer/backend",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
