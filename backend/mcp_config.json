@@ -1,11 +1,11 @@
 {
   "mcpServers": {
     "stock-analyzer": {
-      "command": "/path/to/your/venv/bin/python",
+      "command": "/Users/rodolphebeloncle/Desktop/stock-analyzer/backend/venv/bin/python",
       "args": ["-m", "src.infrastructure.mcp.mcp_server"],
-      "cwd": "/path/to/stock-analyzer/backend",
+      "cwd": "/Users/rodolphebeloncle/Desktop/stock-analyzer/backend",
       "env": {
-        "PYTHONPATH": "/path/to/stock-analyzer/backend",
+        "PYTHONPATH": "/Users/rodolphebeloncle/Desktop/stock-analyzer/backend",
         "PYTHONUNBUFFERED": "1"
       }
     }

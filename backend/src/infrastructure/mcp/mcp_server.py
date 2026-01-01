@@ -28,6 +28,13 @@ from pathlib import Path
 backend_dir = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(backend_dir))
 
+# Charger les variables d'environnement depuis .env
+from dotenv import load_dotenv
+env_file = backend_dir / ".env"
+if env_file.exists():
+    load_dotenv(env_file)
+    logging.info(f"Loaded environment from {env_file}")
+
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
