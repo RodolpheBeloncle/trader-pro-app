@@ -1,0 +1,398 @@
+import { useState, useEffect } from 'react'
+import { RefreshCw, Download, Plus, TrendingUp, ChevronDown, BarChart3, Coins, PieChart, Wallet } from 'lucide-react'
+import { analyzeTicker, analyzeBatch, getMarkets, getMarketTickers, exportCSVFromData } from './api'
+import StockTable from './components/StockTable'
+import StockChart from './components/StockChart'
+import Filters from './components/Filters'
+import SaxoPortfolio from './components/SaxoPortfolio'
+
+// Tab configuration
+const TABS = [
+  { id: 'stocks', label: 'Actions', icon: BarChart3, color: 'emerald' },
+  { id: 'etfs', label: 'ETFs', icon: PieChart, color: 'blue' },
+  { id: 'crypto', label: 'Crypto', icon: Coins, color: 'orange' },
+  { id: 'saxo', label: 'Mon Portfolio', icon: Wallet, color: 'purple' }
+]
+
+function App() {
+  const [stocks, setStocks] = useState([])
+  const [markets, setMarkets] = useState([])
+  const [marketLoadState, setMarketLoadState] = useState({}) // Track loaded tickers per market
+  const [activeTab, setActiveTab] = useState('stocks') // Current asset type tab
+  const [loading, setLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(null) // Which market is loading more
+  const [error, setError] = useState(null)
+  const [tickerInput, setTickerInput] = useState('')
+  const [selectedStock, setSelectedStock] = useState(null)
+  const [filters, setFilters] = useState({
+    resilientOnly: false,
+    maxVolatility: 100
+  })
+  const [tickerToTrade, setTickerToTrade] = useState(null)
+
+  useEffect(() => {
+    loadMarkets()
+
+    // Détecter le callback OAuth Saxo et basculer vers l'onglet Saxo
+    const urlParams = new URLSearchParams(window.location.search)
+    const code = urlParams.get('code')
+    if (code) {
+      setActiveTab('saxo')
+    }
+  }, [])
+
+  const loadMarkets = async () => {
+    try {
+      const data = await getMarkets()
+      setMarkets(data.markets)
+    } catch (err) {
+      console.error('Failed to load markets:', err)
+    }
+  }
+
+  const addTicker = async () => {
+    if (!tickerInput.trim()) return
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await analyzeTicker(tickerInput.trim())
+      if (result.error) {
+        setError(`Error analyzing ${tickerInput}: ${result.error}`)
+      } else {
+        setStocks(prev => {
+          const exists = prev.find(s => s.ticker === result.ticker)
+          if (exists) {
+            return prev.map(s => s.ticker === result.ticker ? result : s)
+          }
+          return [...prev, result]
+        })
+      }
+      setTickerInput('')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadMarket = async (marketId, loadMore = false) => {
+    if (loadMore) {
+      setLoadingMore(marketId)
+    } else {
+      setLoading(true)
+    }
+    setError(null)
+
+    try {
+      // Get current offset for this market
+      const currentState = marketLoadState[marketId] || { loaded: 0, total: 0 }
+      const offset = loadMore ? currentState.loaded : 0
+      const limit = 10
+
+      const marketData = await getMarketTickers(marketId, limit, offset)
+      const result = await analyzeBatch(marketData.tickers)
+      const newStocks = result.results.filter(r => !r.error)
+
+      setStocks(prev => {
+        const existing = new Set(prev.map(s => s.ticker))
+        const toAdd = newStocks.filter(s => !existing.has(s.ticker))
+        return [...prev, ...toAdd]
+      })
+
+      // Update market load state
+      setMarketLoadState(prev => ({
+        ...prev,
+        [marketId]: {
+          loaded: offset + marketData.tickers.length,
+          total: marketData.total,
+          hasMore: marketData.has_more,
+          name: marketData.name
+        }
+      }))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+      setLoadingMore(null)
+    }
+  }
+
+  const loadMoreFromMarket = (marketId) => {
+    loadMarket(marketId, true)
+  }
+
+  const refreshAll = async () => {
+    if (stocks.length === 0) return
+    setLoading(true)
+    setError(null)
+    try {
+      const tickers = stocks.map(s => s.ticker)
+      const result = await analyzeBatch(tickers)
+      setStocks(result.results.filter(r => !r.error))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleExportCSV = () => {
+    if (filteredStocks.length === 0) return
+    // Export what's displayed (filtered stocks)
+    exportCSVFromData(filteredStocks)
+  }
+
+  const removeStock = (ticker) => {
+    setStocks(prev => prev.filter(s => s.ticker !== ticker))
+    if (selectedStock?.ticker === ticker) {
+      setSelectedStock(null)
+    }
+  }
+
+  // Handle trade request from stock table
+  const handleTrade = (stock) => {
+    setTickerToTrade(stock.ticker)
+    setActiveTab('saxo')
+  }
+
+  const filteredStocks = stocks.filter(stock => {
+    if (filters.resilientOnly && !stock.is_resilient) return false
+    if (stock.volatility > filters.maxVolatility) return false
+    return true
+  })
+
+  const resilientCount = stocks.filter(s => s.is_resilient).length
+
+  return (
+    <div className="min-h-screen p-6">
+      <div className="max-w-7xl mx-auto">
+        {/* Header */}
+        <div className="mb-8">
+          <div className="flex items-center gap-3 mb-2">
+            <TrendingUp className="w-10 h-10 text-emerald-500" />
+            <h1 className="text-3xl font-bold">Stock Analyzer</h1>
+          </div>
+          <p className="text-slate-400">
+            Multi-period resilience analysis - Find stocks with positive performance across all timeframes
+          </p>
+        </div>
+
+        {/* Controls */}
+        <div className="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-xl p-6 mb-6">
+          {/* Add ticker */}
+          <div className="flex gap-3 mb-6">
+            <input
+              type="text"
+              value={tickerInput}
+              onChange={(e) => setTickerInput(e.target.value.toUpperCase())}
+              onKeyDown={(e) => e.key === 'Enter' && addTicker()}
+              placeholder="Enter ticker (e.g., AAPL, MSFT)"
+              className="flex-1 bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-2.5 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+            />
+            <button
+              onClick={addTicker}
+              disabled={loading}
+              className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white px-6 py-2.5 rounded-lg font-medium flex items-center gap-2"
+            >
+              <Plus className="w-5 h-5" />
+              Add
+            </button>
+          </div>
+
+          {/* Asset Type Tabs */}
+          <div className="mb-6">
+            <div className="flex gap-2 mb-4 border-b border-slate-700 pb-4">
+              {TABS.map(tab => {
+                const Icon = tab.icon
+                const isActive = activeTab === tab.id
+                const tabMarkets = markets.filter(m => m.type === tab.id)
+                const totalCount = tabMarkets.reduce((sum, m) => sum + m.count, 0)
+
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => {
+                      setActiveTab(tab.id)
+                      if (tab.id !== 'saxo') setTickerToTrade(null)
+                    }}
+                    className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium transition-all ${
+                      isActive
+                        ? tab.id === 'stocks' ? 'bg-emerald-600 text-white'
+                        : tab.id === 'etfs' ? 'bg-blue-600 text-white'
+                        : tab.id === 'crypto' ? 'bg-orange-600 text-white'
+                        : 'bg-purple-600 text-white'
+                        : 'bg-slate-700/50 text-slate-300 hover:bg-slate-600/50'
+                    }`}
+                  >
+                    <Icon className="w-5 h-5" />
+                    {tab.label}
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${
+                      isActive ? 'bg-white/20' : 'bg-slate-600'
+                    }`}>
+                      {totalCount}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* Saxo Portfolio Tab */}
+            {activeTab === 'saxo' && (
+              <SaxoPortfolio
+                initialTicker={tickerToTrade}
+                key={tickerToTrade || 'saxo'} // Force re-render when ticker changes
+              />
+            )}
+
+            {/* Market presets for active tab (not for Saxo) */}
+            {activeTab !== 'saxo' && (
+              <>
+                <span className="text-sm text-slate-400 mb-2 block">
+                  {activeTab === 'stocks' && 'Marchés Actions :'}
+                  {activeTab === 'etfs' && 'ETFs disponibles :'}
+                  {activeTab === 'crypto' && 'Cryptomonnaies :'}
+                </span>
+            <div className="flex flex-wrap gap-2">
+              {markets
+                .filter(market => market.type === activeTab)
+                .map(market => {
+                  const state = marketLoadState[market.id]
+                  const hasMore = state?.hasMore
+                  const loaded = state?.loaded || 0
+                  const total = state?.total || market.count
+
+                  const buttonColor = activeTab === 'stocks'
+                    ? 'hover:border-emerald-500'
+                    : activeTab === 'etfs'
+                    ? 'hover:border-blue-500'
+                    : 'hover:border-orange-500'
+
+                  const loadMoreColor = activeTab === 'stocks'
+                    ? 'bg-emerald-600/50 hover:bg-emerald-500/50 border-emerald-600'
+                    : activeTab === 'etfs'
+                    ? 'bg-blue-600/50 hover:bg-blue-500/50 border-blue-600'
+                    : 'bg-orange-600/50 hover:bg-orange-500/50 border-orange-600'
+
+                  return (
+                    <div key={market.id} className="flex items-center gap-1">
+                      <button
+                        onClick={() => loadMarket(market.id)}
+                        disabled={loading || loadingMore}
+                        className={`bg-slate-700/50 hover:bg-slate-600/50 disabled:opacity-50 border border-slate-600 ${buttonColor} px-4 py-2 rounded-lg text-sm font-medium transition-colors`}
+                      >
+                        {market.name} ({loaded > 0 ? `${loaded}/${total}` : total})
+                      </button>
+                      {hasMore && (
+                        <button
+                          onClick={() => loadMoreFromMarket(market.id)}
+                          disabled={loading || loadingMore === market.id}
+                          className={`${loadMoreColor} disabled:opacity-50 border px-2 py-2 rounded-lg text-sm`}
+                          title={`Load 10 more from ${market.name}`}
+                        >
+                          {loadingMore === market.id ? (
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <ChevronDown className="w-4 h-4" />
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
+            </div>
+              </>
+            )}
+          </div>
+
+          {/* Actions - only show when not on Saxo tab */}
+          {activeTab !== 'saxo' && (
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <Filters filters={filters} onChange={setFilters} />
+
+            <div className="flex gap-3">
+              <button
+                onClick={refreshAll}
+                disabled={loading || stocks.length === 0}
+                className="bg-slate-700/50 hover:bg-slate-600/50 disabled:opacity-50 border border-slate-600 px-4 py-2 rounded-lg flex items-center gap-2"
+              >
+                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                Refresh
+              </button>
+              <button
+                onClick={handleExportCSV}
+                disabled={stocks.length === 0}
+                className="bg-slate-700/50 hover:bg-slate-600/50 disabled:opacity-50 border border-slate-600 px-4 py-2 rounded-lg flex items-center gap-2"
+              >
+                <Download className="w-4 h-4" />
+                Export CSV
+              </button>
+            </div>
+          </div>
+          )}
+        </div>
+
+        {/* Error message */}
+        {error && (
+          <div className="bg-red-900/30 border border-red-700 rounded-xl p-4 mb-6">
+            <p className="text-red-400">{error}</p>
+          </div>
+        )}
+
+        {/* Stats, Loading, Table, Chart - only show when not on Saxo tab */}
+        {activeTab !== 'saxo' && (
+          <>
+            <div className="flex items-center gap-4 mb-4">
+              <span className="text-slate-400">
+                Showing <span className="text-white font-semibold">{filteredStocks.length}</span> of {stocks.length} stocks
+              </span>
+              <span className="text-slate-500">|</span>
+              <span className="text-emerald-400">
+                <span className="font-semibold">{resilientCount}</span> resilient
+              </span>
+            </div>
+
+            {/* Loading indicator */}
+            {loading && (
+              <div className="flex items-center justify-center py-12">
+                <div className="flex items-center gap-3 text-slate-400">
+                  <RefreshCw className="w-6 h-6 animate-spin" />
+                  <span>Analyzing stocks...</span>
+                </div>
+              </div>
+            )}
+
+            {/* Main content */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Table */}
+              <div className="lg:col-span-2">
+                <StockTable
+                  stocks={filteredStocks}
+                  onSelect={setSelectedStock}
+                  onRemove={removeStock}
+                  onTrade={handleTrade}
+                  selectedTicker={selectedStock?.ticker}
+                />
+              </div>
+
+              {/* Chart */}
+              <div className="lg:col-span-1">
+                <StockChart stock={selectedStock} />
+              </div>
+            </div>
+
+            {/* Empty state */}
+            {!loading && stocks.length === 0 && (
+              <div className="text-center py-16">
+                <TrendingUp className="w-16 h-16 text-slate-600 mx-auto mb-4" />
+                <h3 className="text-xl font-medium text-slate-400 mb-2">No stocks analyzed yet</h3>
+                <p className="text-slate-500">Add a ticker or load a market preset to get started</p>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+export default App
