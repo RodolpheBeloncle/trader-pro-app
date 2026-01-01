@@ -43,21 +43,22 @@ async def analyze_stock_tool(ticker: str) -> str:
         if result.is_success and result.analysis:
             analysis = result.analysis
 
-            # Formater le resultat
+            # Formater le resultat avec conversion des Value Objects
+            perf = analysis.performances
             output = {
-                "ticker": analysis.ticker,
+                "ticker": str(analysis.ticker),
                 "name": analysis.info.name,
-                "current_price": analysis.current_price,
-                "currency": analysis.currency,
+                "current_price": analysis.current_price.as_float() if analysis.current_price else None,
+                "currency": analysis.info.currency,
                 "performances": {
-                    "3_months": analysis.performances.perf_3m,
-                    "6_months": analysis.performances.perf_6m,
-                    "1_year": analysis.performances.perf_1y,
-                    "3_years": analysis.performances.perf_3y,
-                    "5_years": analysis.performances.perf_5y,
+                    "3_months": perf.perf_3m.as_percent if perf.perf_3m else None,
+                    "6_months": perf.perf_6m.as_percent if perf.perf_6m else None,
+                    "1_year": perf.perf_1y.as_percent if perf.perf_1y else None,
+                    "3_years": perf.perf_3y.as_percent if perf.perf_3y else None,
+                    "5_years": perf.perf_5y.as_percent if perf.perf_5y else None,
                 },
                 "is_resilient": analysis.is_resilient,
-                "volatility": analysis.volatility,
+                "volatility": analysis.volatility.as_percent if analysis.volatility else None,
                 "volatility_level": analysis.volatility_level,
                 "score": analysis.score,
                 "sector": analysis.info.sector,
@@ -110,14 +111,15 @@ async def analyze_batch_tool(tickers: List[str]) -> str:
 
             if result.is_success and result.analysis:
                 analysis = result.analysis
+                perf = analysis.performances
                 results.append({
-                    "ticker": analysis.ticker,
+                    "ticker": str(analysis.ticker),
                     "name": analysis.info.name,
-                    "price": analysis.current_price,
-                    "perf_3m": analysis.performances.perf_3m,
-                    "perf_1y": analysis.performances.perf_1y,
+                    "price": analysis.current_price.as_float() if analysis.current_price else None,
+                    "perf_3m": perf.perf_3m.as_percent if perf.perf_3m else None,
+                    "perf_1y": perf.perf_1y.as_percent if perf.perf_1y else None,
                     "is_resilient": analysis.is_resilient,
-                    "volatility": analysis.volatility,
+                    "volatility": analysis.volatility.as_percent if analysis.volatility else None,
                     "score": analysis.score,
                 })
             else:

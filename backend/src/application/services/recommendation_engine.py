@@ -143,7 +143,7 @@ class RecommendationEngine:
                 return None
 
             # 2. Récupérer les métadonnées
-            metadata = await self._provider.get_stock_metadata(ticker_obj)
+            metadata = await self._provider.get_metadata(ticker_obj)
 
             # 3. Calculer les indicateurs techniques
             technical = await self._calculator.calculate_all(ticker, historical_data)

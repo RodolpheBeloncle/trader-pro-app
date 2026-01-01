@@ -246,7 +246,7 @@ def mock_provider(
 
     # Configurer les retours
     provider.get_historical_data.return_value = mock_historical_data
-    provider.get_stock_metadata.return_value = mock_stock_metadata
+    provider.get_metadata.return_value = mock_stock_metadata
     provider.get_current_quote.return_value = mock_stock_quote
     provider.calculate_volatility.return_value = 25.0  # 25% volatilite
 
@@ -263,7 +263,7 @@ def mock_provider_resilient(
     provider = AsyncMock(spec=StockDataProvider)
 
     provider.get_historical_data.return_value = mock_resilient_data
-    provider.get_stock_metadata.return_value = mock_stock_metadata
+    provider.get_metadata.return_value = mock_stock_metadata
     provider.get_current_quote.return_value = mock_stock_quote
     provider.calculate_volatility.return_value = 15.0  # Faible volatilite
 
@@ -276,7 +276,7 @@ def mock_provider_not_found() -> StockDataProvider:
     from src.domain.exceptions import TickerNotFoundError
 
     provider = AsyncMock(spec=StockDataProvider)
-    provider.get_stock_metadata.side_effect = TickerNotFoundError("INVALID")
+    provider.get_metadata.side_effect = TickerNotFoundError("INVALID")
 
     return provider
 

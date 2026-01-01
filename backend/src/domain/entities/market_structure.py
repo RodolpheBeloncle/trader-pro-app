@@ -72,6 +72,13 @@ class LiquidityType(str, Enum):
     EQUAL_LOWS = "equal_lows"   # Liquidité concentrée (double bottom)
 
 
+def _datetime_to_str(dt: datetime) -> str:
+    """Convertit un datetime ou pandas Timestamp en string ISO."""
+    if hasattr(dt, 'isoformat'):
+        return dt.isoformat()
+    return str(dt)
+
+
 @dataclass
 class SwingPoint:
     """
@@ -88,7 +95,7 @@ class SwingPoint:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "date": self.date.isoformat(),
+            "date": _datetime_to_str(self.date),
             "price": round(self.price, 2),
             "swing_type": self.swing_type.value,
             "strength": self.strength,
@@ -126,8 +133,8 @@ class FairValueGap:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "start_date": self.start_date.isoformat(),
-            "end_date": self.end_date.isoformat(),
+            "start_date": _datetime_to_str(self.start_date),
+            "end_date": _datetime_to_str(self.end_date),
             "top": round(self.top, 2),
             "bottom": round(self.bottom, 2),
             "midpoint": round(self.midpoint, 2),
@@ -158,7 +165,15 @@ class LiquidityZone:
     @property
     def age_days(self) -> int:
         """Âge de la zone en jours."""
-        return (datetime.now() - self.created_at).days
+        # Gérer les timestamps pandas timezone-aware
+        now = datetime.now()
+        created = self.created_at
+        # Convertir en datetime naive si nécessaire
+        if hasattr(created, 'tz') and created.tz is not None:
+            created = created.tz_localize(None) if hasattr(created, 'tz_localize') else created.replace(tzinfo=None)
+        elif hasattr(created, 'tzinfo') and created.tzinfo is not None:
+            created = created.replace(tzinfo=None)
+        return (now - created).days
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -167,7 +182,7 @@ class LiquidityZone:
             "strength": self.strength,
             "age_days": self.age_days,
             "is_swept": self.is_swept,
-            "last_test": self.last_test.isoformat(),
+            "last_test": _datetime_to_str(self.last_test),
         }
 
 
@@ -193,7 +208,7 @@ class OrderBlock:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "date": self.date.isoformat(),
+            "date": _datetime_to_str(self.date),
             "high": round(self.high, 2),
             "low": round(self.low, 2),
             "midpoint": round(self.midpoint, 2),

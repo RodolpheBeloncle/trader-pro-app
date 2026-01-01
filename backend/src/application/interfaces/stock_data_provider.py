@@ -61,18 +61,22 @@ class StockQuote:
     Attributs:
         ticker: Symbole boursier
         price: Prix actuel
+        previous_close: Prix de clôture précédent
         change: Variation en valeur absolue
         change_percent: Variation en pourcentage
-        volume: Volume du jour
+        currency: Devise
         timestamp: Horodatage de la citation
+        volume: Volume du jour (optionnel)
     """
 
     ticker: str
     price: float
+    previous_close: float
     change: float
     change_percent: float
-    volume: int
+    currency: str
     timestamp: datetime
+    volume: Optional[int] = None
 
     @property
     def is_up(self) -> bool:
@@ -94,6 +98,7 @@ class StockMetadata:
     exchange: Optional[str] = None
     sector: Optional[str] = None
     industry: Optional[str] = None
+    asset_type: Optional[Any] = None  # AssetType enum
     market_cap: Optional[float] = None
     dividend_yield: Optional[float] = None
     description: Optional[str] = None

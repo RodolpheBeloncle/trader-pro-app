@@ -18,6 +18,23 @@ import json
 import logging
 from typing import List
 
+import numpy as np
+
+
+class NumpyEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles numpy types."""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
 from src.infrastructure.providers.yahoo_finance_provider import YahooFinanceProvider
 from src.application.services.technical_calculator import TechnicalCalculator
 from src.application.services.market_structure_analyzer import MarketStructureAnalyzer
@@ -69,7 +86,7 @@ async def pro_analyze_tool(ticker: str, capital: float = 10000.0) -> str:
         # Ajouter un resume executif pour un neophyte
         result["executive_summary"] = _generate_executive_summary(decision)
 
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=NumpyEncoder)
 
     except Exception as e:
         logger.exception(f"Error in pro_analyze for {ticker}: {e}")
@@ -124,7 +141,7 @@ async def get_market_structure_tool(ticker: str) -> str:
             "what_to_do": _generate_action_advice(structure),
         }
 
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=NumpyEncoder)
 
     except Exception as e:
         logger.exception(f"Error getting market structure for {ticker}: {e}")
@@ -170,7 +187,7 @@ async def calculate_position_size_tool(
             "warning": "Ne jamais risquer plus de 2% par trade. Preferez 1% pour les debutants.",
         }
 
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=NumpyEncoder)
 
     except Exception as e:
         logger.exception(f"Error calculating position size: {e}")
@@ -212,7 +229,7 @@ async def calculate_risk_reward_tool(
             "min_winrate_needed": f"Avec ce R/R, vous devez gagner {analysis.required_win_rate*100:.0f}% des trades pour etre rentable",
         }
 
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=NumpyEncoder)
 
     except Exception as e:
         logger.exception(f"Error calculating R/R: {e}")
@@ -255,7 +272,7 @@ async def calculate_kelly_tool(
             "warning": "Kelly suppose que vos stats sont fiables (minimum 30+ trades)",
         }
 
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=NumpyEncoder)
 
     except Exception as e:
         logger.exception(f"Error calculating Kelly: {e}")

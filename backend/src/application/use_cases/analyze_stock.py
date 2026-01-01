@@ -49,6 +49,8 @@ from src.domain.exceptions import (
     AnalysisError,
 )
 from src.domain.value_objects.ticker import Ticker
+from src.domain.value_objects.money import Money
+from src.domain.value_objects.percentage import Percentage
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +108,7 @@ class AnalyzeStockUseCase:
             logger.info(f"Analyzing {ticker.value}...")
 
             # Récupérer les métadonnées
-            metadata = await self.provider.get_stock_metadata(ticker)
+            metadata = await self.provider.get_metadata(ticker)
 
             # Récupérer 5 ans d'historique pour les calculs
             historical_data = await self.provider.get_historical_data(
@@ -139,27 +141,33 @@ class AnalyzeStockUseCase:
             score = self._calculate_score(performances, volatility)
 
             # Construire l'analyse
+            # Convertir le dividend yield en Percentage si disponible
+            dividend_yield_pct = None
+            if metadata.dividend_yield is not None:
+                dividend_yield_pct = Percentage.from_percent(metadata.dividend_yield)
+
             stock_info = StockInfo(
                 name=metadata.name,
                 currency=metadata.currency,
                 exchange=metadata.exchange,
                 sector=metadata.sector,
                 industry=metadata.industry,
-                asset_type=metadata.asset_type.value,
-                dividend_yield=metadata.dividend_yield,
+                asset_type=metadata.asset_type if metadata.asset_type else None,
+                dividend_yield=dividend_yield_pct,
             )
 
+            # Convertir les valeurs en Value Objects
+            current_price_money = Money(quote.price, quote.currency)
+            volatility_pct = Percentage.from_percent(volatility) if volatility else None
+
             analysis = StockAnalysis(
-                ticker=ticker.value,
+                ticker=ticker,
                 info=stock_info,
                 performances=performances,
-                current_price=quote.price,
-                currency=quote.currency,
-                volatility=volatility,
-                volatility_level=volatility_level.value,
-                score=score,
+                current_price=current_price_money,
+                volatility=volatility_pct,
                 chart_data=chart_data,
-                analyzed_at=datetime.now().isoformat(),
+                analyzed_at=datetime.now(),
             )
 
             logger.info(
@@ -222,11 +230,11 @@ class AnalyzeStockUseCase:
         perf_5y = self._calculate_period_performance(sorted_data, PERIOD_5_YEARS_DAYS)
 
         return PerformanceData(
-            perf_3m=perf_3m,
-            perf_6m=perf_6m,
-            perf_1y=perf_1y,
-            perf_3y=perf_3y,
-            perf_5y=perf_5y,
+            perf_3m=Percentage.from_percent(perf_3m) if perf_3m is not None else None,
+            perf_6m=Percentage.from_percent(perf_6m) if perf_6m is not None else None,
+            perf_1y=Percentage.from_percent(perf_1y) if perf_1y is not None else None,
+            perf_3y=Percentage.from_percent(perf_3y) if perf_3y is not None else None,
+            perf_5y=Percentage.from_percent(perf_5y) if perf_5y is not None else None,
         )
 
     def _calculate_period_performance(
@@ -326,14 +334,14 @@ class AnalyzeStockUseCase:
         for i in range(0, len(sorted_data), step):
             point = sorted_data[i]
             chart_points.append(ChartDataPoint(
-                date=point.date.strftime("%Y-%m-%d"),
+                date=point.date,
                 price=round(point.close, 2),
             ))
 
         # S'assurer d'inclure le dernier point
-        if sorted_data and chart_points[-1].date != sorted_data[-1].date.strftime("%Y-%m-%d"):
+        if sorted_data and chart_points[-1].date != sorted_data[-1].date:
             chart_points.append(ChartDataPoint(
-                date=sorted_data[-1].date.strftime("%Y-%m-%d"),
+                date=sorted_data[-1].date,
                 price=round(sorted_data[-1].close, 2),
             ))
 
@@ -372,9 +380,9 @@ class AnalyzeStockUseCase:
         ]
 
         for perf in perfs:
-            if perf is not None and perf > 0:
+            if perf is not None and perf.is_positive:
                 score += 15  # Performance positive
-                if perf > 20:
+                if perf.as_percent > 20:
                     score += 5  # Bonus performance forte
 
         # Points pour la volatilité

@@ -64,7 +64,8 @@ class YahooFinanceProvider(StockDataProvider):
     async def get_historical_data(
         self,
         ticker: Ticker,
-        days: int,
+        days: int = 365,
+        interval: str = "1d",
     ) -> List[HistoricalDataPoint]:
         """
         Récupère les données historiques depuis Yahoo Finance.
@@ -177,7 +178,7 @@ class YahooFinanceProvider(StockDataProvider):
                 f"Erreur lors de la récupération du cours pour {ticker.value}: {str(e)}"
             )
 
-    async def get_stock_metadata(self, ticker: Ticker) -> StockMetadata:
+    async def get_metadata(self, ticker: Ticker) -> StockMetadata:
         """
         Récupère les métadonnées d'un instrument.
 
@@ -291,6 +292,31 @@ class YahooFinanceProvider(StockDataProvider):
             return not hist.empty
         except Exception:
             return False
+
+    async def search(self, query: str, limit: int = 10) -> List[StockMetadata]:
+        """
+        Recherche des stocks par nom ou symbole.
+
+        Note: Yahoo Finance n'a pas d'API de recherche native dans yfinance.
+        Cette implémentation tente de valider le ticker directement.
+
+        Args:
+            query: Terme de recherche (symbole)
+            limit: Nombre maximum de résultats
+
+        Returns:
+            Liste de StockMetadata si le ticker est trouvé
+        """
+        try:
+            # yfinance n'a pas de vrai search - on essaie le ticker directement
+            ticker = Ticker(query.upper())
+            if await self.is_valid_ticker(ticker):
+                metadata = await self.get_metadata(ticker)
+                return [metadata]
+            return []
+        except Exception as e:
+            logger.warning(f"Search failed for {query}: {e}")
+            return []
 
     # =========================================================================
     # MÉTHODES PRIVÉES
