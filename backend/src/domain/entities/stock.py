@@ -152,6 +152,41 @@ class ChartDataPoint:
 
 
 @dataclass
+class OHLCDataPoint:
+    """
+    Un point de données OHLC pour graphique candlestick.
+
+    Attributs:
+        time: Timestamp Unix (secondes)
+        open: Prix d'ouverture
+        high: Prix le plus haut
+        low: Prix le plus bas
+        close: Prix de cloture
+        volume: Volume echange (optionnel)
+    """
+
+    time: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: Optional[int] = None
+
+    def to_dict(self) -> Dict:
+        """Convertit pour TradingView lightweight-charts."""
+        result = {
+            "time": self.time,
+            "open": round(self.open, 2),
+            "high": round(self.high, 2),
+            "low": round(self.low, 2),
+            "close": round(self.close, 2),
+        }
+        if self.volume is not None:
+            result["value"] = self.volume
+        return result
+
+
+@dataclass
 class StockInfo:
     """
     Informations de base sur un stock (métadonnées).

@@ -87,7 +87,7 @@ def get_token_store() -> Optional[FileTokenStore]:
         logger.warning("Token store disabled (no encryption)")
         return None
 
-    return FileTokenStore(encryption)
+    return FileTokenStore(encryption_service=encryption)
 
 
 @lru_cache()
@@ -160,6 +160,21 @@ async def get_place_order_use_case(broker_name: str) -> PlaceOrderUseCase:
     broker = factory.create(broker_name)
 
     return PlaceOrderUseCase(broker)
+
+
+# =============================================================================
+# BROKER KEY HELPERS
+# =============================================================================
+
+def get_saxo_broker_key() -> str:
+    """
+    Retourne la clé du broker Saxo avec l'environnement.
+
+    Ex: "saxo_SIM" ou "saxo_LIVE"
+    Permet de stocker des tokens séparés par environnement.
+    """
+    settings = get_settings()
+    return f"saxo_{settings.SAXO_ENVIRONMENT}"
 
 
 # =============================================================================

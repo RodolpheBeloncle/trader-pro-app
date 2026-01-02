@@ -38,7 +38,7 @@ from src.domain.exceptions import (
     BrokerAuthenticationError,
     TokenExpiredError,
 )
-from src.infrastructure.brokers.saxo.saxo_oauth import SaxoOAuthService
+from src.infrastructure.brokers.saxo.saxo_auth import SaxoAuthService, get_saxo_auth
 from src.infrastructure.brokers.saxo.saxo_api_client import SaxoApiClient
 from src.infrastructure.brokers.saxo import saxo_mappers as mappers
 
@@ -64,6 +64,17 @@ class SaxoBroker(BrokerService):
 
     BROKER_NAME = "saxo"
 
+    @property
+    def broker_key(self) -> str:
+        """
+        Retourne la clé du broker avec l'environnement.
+
+        Ex: "saxo_SIM" ou "saxo_LIVE"
+        Permet de stocker des tokens séparés par environnement.
+        """
+        env = self.settings.SAXO_ENVIRONMENT
+        return f"{self.BROKER_NAME}_{env}"
+
     def __init__(
         self,
         settings: Settings,
@@ -77,7 +88,7 @@ class SaxoBroker(BrokerService):
             token_store: Repository pour le stockage des tokens
         """
         self.settings = settings
-        self.oauth = SaxoOAuthService(settings)
+        self.oauth = SaxoAuthService(settings)
         self.api_client = SaxoApiClient(settings)
         self.token_store = token_store
 
@@ -114,15 +125,16 @@ class SaxoBroker(BrokerService):
             state: État personnalisé (optionnel)
 
         Returns:
-            Dict avec auth_url et state
+            Dict avec auth_url
         """
-        return self.oauth.get_authorization_url(user_id, state)
+        auth_url = self.oauth.get_auth_url()
+        return {"auth_url": auth_url}
 
     async def handle_oauth_callback(
         self,
         user_id: str,
         authorization_code: str,
-        state: str,
+        state: str = None,
     ) -> BrokerCredentials:
         """
         Traite le callback OAuth et stocke les tokens.
@@ -130,7 +142,7 @@ class SaxoBroker(BrokerService):
         Args:
             user_id: ID de l'utilisateur
             authorization_code: Code d'autorisation
-            state: État pour validation
+            state: État pour validation (non utilisé)
 
         Returns:
             BrokerCredentials avec access_token
@@ -138,27 +150,15 @@ class SaxoBroker(BrokerService):
         Raises:
             BrokerAuthenticationError: Si l'authentification échoue
         """
-        # Échanger le code contre des tokens
-        token_response = self.oauth.exchange_code(authorization_code, state)
+        # Échanger le code contre des tokens (le nouveau service gère le stockage)
+        token = self.oauth.exchange_code(authorization_code)
 
-        # Stocker les tokens si un store est configuré
-        if self.token_store:
-            await self.token_store.save_token(
-                user_id=user_id,
-                broker=self.BROKER_NAME,
-                token_data={
-                    "access_token": token_response.access_token,
-                    "refresh_token": token_response.refresh_token,
-                    "expires_at": token_response.expires_at.isoformat(),
-                }
-            )
-
-        logger.info(f"User {user_id} authenticated with Saxo")
+        logger.info(f"User {user_id} authenticated with Saxo ({self.settings.SAXO_ENVIRONMENT})")
 
         return BrokerCredentials(
-            access_token=token_response.access_token,
-            refresh_token=token_response.refresh_token,
-            expires_at=token_response.expires_at,
+            access_token=token.access_token,
+            refresh_token=token.refresh_token,
+            expires_at=token.expires_at,
             broker=self.BROKER_NAME,
         )
 
@@ -184,12 +184,12 @@ class SaxoBroker(BrokerService):
                 "Pas de refresh token disponible"
             )
 
-        token_response = self.oauth.refresh_tokens(credentials.refresh_token)
+        token = self.oauth.refresh_token(credentials.refresh_token)
 
         return BrokerCredentials(
-            access_token=token_response.access_token,
-            refresh_token=token_response.refresh_token,
-            expires_at=token_response.expires_at,
+            access_token=token.access_token,
+            refresh_token=token.refresh_token,
+            expires_at=token.expires_at,
             broker=self.BROKER_NAME,
         )
 

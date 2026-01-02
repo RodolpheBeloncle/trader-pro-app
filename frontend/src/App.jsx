@@ -1,18 +1,85 @@
-import { useState, useEffect } from 'react'
-import { RefreshCw, Download, Plus, TrendingUp, ChevronDown, BarChart3, Coins, PieChart, Wallet } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { RefreshCw, Download, Plus, TrendingUp, ChevronDown, BarChart3, Coins, PieChart, Wallet, Settings } from 'lucide-react'
 import { analyzeTicker, analyzeBatch, getMarkets, getMarketTickers, exportCSVFromData } from './api'
 import StockTable from './components/StockTable'
 import StockChart from './components/StockChart'
 import Filters from './components/Filters'
 import SaxoPortfolio from './components/SaxoPortfolio'
+import DataSourceToggle from './components/DataSourceToggle'
+import ProfileConfig from './components/ProfileConfig'
 
-// Tab configuration
+// Process OAuth callback at app level to ensure it's handled
+const processOAuthCallback = async () => {
+  const urlParams = new URLSearchParams(window.location.search)
+  const code = urlParams.get('code')
+  const state = urlParams.get('state')
+
+  if (!code) return null
+
+  console.log('App: Processing OAuth callback with code:', code.substring(0, 20) + '...')
+
+  try {
+    let url = `/api/saxo/auth/callback?code=${encodeURIComponent(code)}`
+    if (state) {
+      url += `&state=${encodeURIComponent(state)}`
+    }
+
+    console.log('App: Fetching callback URL:', url)
+
+    // Ajouter un timeout de 30 secondes
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 30000)
+
+    const response = await fetch(url, { signal: controller.signal })
+    clearTimeout(timeoutId)
+
+    console.log('App: Got response, status:', response.status)
+    const data = await response.json()
+
+    console.log('App: OAuth callback response:', response.status, data)
+
+    // Clean URL
+    window.history.replaceState({}, '', window.location.pathname)
+
+    if (!response.ok) {
+      const errorMsg = data.detail || data.error_description || data.error || `Erreur ${response.status}`
+      return { error: typeof errorMsg === 'object' ? JSON.stringify(errorMsg) : errorMsg }
+    }
+
+    if (data.access_token) {
+      return { success: true, access_token: data.access_token }
+    }
+
+    return { error: data.detail || 'Réponse inattendue' }
+  } catch (err) {
+    console.error('App: OAuth callback exception:', err)
+    window.history.replaceState({}, '', window.location.pathname)
+    return { error: 'Échec de connexion: ' + err.message }
+  }
+}
+
+// Tab configuration (sans config - c'est en haut a droite)
 const TABS = [
   { id: 'stocks', label: 'Actions', icon: BarChart3, color: 'emerald' },
   { id: 'etfs', label: 'ETFs', icon: PieChart, color: 'blue' },
   { id: 'crypto', label: 'Crypto', icon: Coins, color: 'orange' },
   { id: 'saxo', label: 'Mon Portfolio', icon: Wallet, color: 'purple' }
 ]
+
+// Flatten API response to match frontend expectations
+const flattenStockData = (stock) => ({
+  ...stock,
+  // Flatten performances
+  perf_3m: stock.performances?.perf_3m ?? null,
+  perf_6m: stock.performances?.perf_6m ?? null,
+  perf_1y: stock.performances?.perf_1y ?? null,
+  perf_3y: stock.performances?.perf_3y ?? null,
+  perf_5y: stock.performances?.perf_5y ?? null,
+  // Flatten info
+  name: stock.info?.name ?? stock.name,
+  sector: stock.info?.sector ?? stock.sector,
+  dividend_yield: stock.info?.dividend_yield ?? stock.dividend_yield,
+})
 
 function App() {
   const [stocks, setStocks] = useState([])
@@ -29,15 +96,22 @@ function App() {
     maxVolatility: 100
   })
   const [tickerToTrade, setTickerToTrade] = useState(null)
+  const [showConfig, setShowConfig] = useState(false)
+  const [oauthResult, setOauthResult] = useState(null) // Result from OAuth callback
 
   useEffect(() => {
     loadMarkets()
 
-    // Détecter le callback OAuth Saxo et basculer vers l'onglet Saxo
+    // Détecter et traiter le callback OAuth Saxo au niveau App
     const urlParams = new URLSearchParams(window.location.search)
     const code = urlParams.get('code')
     if (code) {
       setActiveTab('saxo')
+      // Process callback immediately
+      processOAuthCallback().then(result => {
+        console.log('App: OAuth result:', result)
+        setOauthResult(result)
+      })
     }
   }, [])
 
@@ -59,12 +133,13 @@ function App() {
       if (result.error) {
         setError(`Error analyzing ${tickerInput}: ${result.error}`)
       } else {
+        const flatResult = flattenStockData(result)
         setStocks(prev => {
-          const exists = prev.find(s => s.ticker === result.ticker)
+          const exists = prev.find(s => s.ticker === flatResult.ticker)
           if (exists) {
-            return prev.map(s => s.ticker === result.ticker ? result : s)
+            return prev.map(s => s.ticker === flatResult.ticker ? flatResult : s)
           }
-          return [...prev, result]
+          return [...prev, flatResult]
         })
       }
       setTickerInput('')
@@ -91,7 +166,7 @@ function App() {
 
       const marketData = await getMarketTickers(marketId, limit, offset)
       const result = await analyzeBatch(marketData.tickers)
-      const newStocks = result.results.filter(r => !r.error)
+      const newStocks = result.results.filter(r => !r.error).map(flattenStockData)
 
       setStocks(prev => {
         const existing = new Set(prev.map(s => s.ticker))
@@ -128,7 +203,7 @@ function App() {
     try {
       const tickers = stocks.map(s => s.ticker)
       const result = await analyzeBatch(tickers)
-      setStocks(result.results.filter(r => !r.error))
+      setStocks(result.results.filter(r => !r.error).map(flattenStockData))
     } catch (err) {
       setError(err.message)
     } finally {
@@ -168,9 +243,22 @@ function App() {
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="mb-8">
-          <div className="flex items-center gap-3 mb-2">
-            <TrendingUp className="w-10 h-10 text-emerald-500" />
-            <h1 className="text-3xl font-bold">Stock Analyzer</h1>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3 mb-2">
+              <TrendingUp className="w-10 h-10 text-emerald-500" />
+              <h1 className="text-3xl font-bold">Stock Analyzer</h1>
+            </div>
+            {/* Data Source Toggle + Settings */}
+            <div className="flex items-center gap-3">
+              <DataSourceToggle compact={true} />
+              <button
+                onClick={() => setShowConfig(true)}
+                className="p-2.5 rounded-lg bg-slate-700/50 hover:bg-slate-600/50 border border-slate-600 hover:border-slate-500 transition-all"
+                title="Parametres"
+              >
+                <Settings className="w-5 h-5 text-slate-300" />
+              </button>
+            </div>
           </div>
           <p className="text-slate-400">
             Multi-period resilience analysis - Find stocks with positive performance across all timeframes
@@ -241,6 +329,8 @@ function App() {
               <SaxoPortfolio
                 initialTicker={tickerToTrade}
                 key={tickerToTrade || 'saxo'} // Force re-render when ticker changes
+                oauthResult={oauthResult}
+                onOauthResultHandled={() => setOauthResult(null)}
               />
             )}
 
@@ -391,6 +481,15 @@ function App() {
           </>
         )}
       </div>
+
+      {/* Configuration Panel (Overlay) */}
+      {showConfig && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 overflow-auto">
+          <div className="min-h-screen py-8">
+            <ProfileConfig onClose={() => setShowConfig(false)} />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

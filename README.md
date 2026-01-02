@@ -165,6 +165,45 @@ SAXO_REDIRECT_URI=http://localhost:5173
 
 > **ATTENTION** : En mode `LIVE`, les ordres passés sont réels !
 
+### 4. Gestion du cache de configuration
+
+L'application utilise un système de cache pour stocker les configurations de manière sécurisée.
+
+#### Comment ca fonctionne
+
+| Source | Priorite | Description |
+|--------|----------|-------------|
+| `data/config.encrypted.json` | **Haute** | Fichier chiffre avec vos credentials |
+| Variables `.env` | Basse | Utilisees uniquement si le fichier chiffre n'existe pas |
+
+**Important** : Quand vous configurez Saxo/Telegram via l'interface, les credentials sont sauvegardes dans le fichier chiffre. Ce fichier a **priorite** sur les variables `.env`.
+
+#### Forcer l'utilisation des variables .env
+
+Si vous modifiez les variables `.env` et voulez qu'elles soient prises en compte :
+
+**Option 1** : Ajouter dans `.env`
+```env
+FORCE_ENV_CONFIG=true
+```
+Au prochain demarrage, le fichier de cache sera supprime et les variables `.env` seront utilisees.
+
+**Option 2** : Supprimer manuellement le cache
+```bash
+rm backend/data/config.encrypted.json
+```
+
+**Option 3** : Reconfigurer via l'interface
+Allez dans Parametres et reconfigurez vos credentials.
+
+#### Quand utiliser quelle methode ?
+
+| Situation | Methode recommandee |
+|-----------|---------------------|
+| Developpement local, test rapide | Variables `.env` + `FORCE_ENV_CONFIG=true` |
+| Production, securite maximale | Interface + fichier chiffre |
+| Changement de credentials | Supprimer le cache et redemarrer |
+
 ---
 
 ## Utilisation
@@ -385,11 +424,36 @@ kill -9 <PID>
 
 Vérifiez que le backend est bien démarré sur le port 8000 et que le proxy Vite est configuré.
 
-### Saxo OAuth échoue
+### Saxo OAuth echoue
 
-1. Vérifiez que le `SAXO_REDIRECT_URI` correspond exactement à celui configuré dans votre app Saxo
-2. Vérifiez que vous utilisez le bon environnement (`SIM` vs `LIVE`)
+1. Verifiez que le `SAXO_REDIRECT_URI` correspond exactement a celui configure dans votre app Saxo
+2. Verifiez que vous utilisez le bon environnement (`SIM` vs `LIVE`)
 3. Consultez les logs backend : `docker-compose logs backend`
+
+### Erreur "Invalid or unknown client_id"
+
+Cette erreur signifie que votre App Key n'est pas reconnue par Saxo :
+1. **Verifiez l'environnement** : Votre app est peut-etre configuree pour SIM uniquement
+2. **Verifiez les credentials** : Assurez-vous que `SAXO_APP_KEY` correspond a votre app sur le portail Saxo
+3. **Demandez l'acces LIVE** : Sur le portail Saxo, soumettez votre app pour approbation LIVE
+
+### Les modifications de .env ne sont pas prises en compte
+
+Le fichier `data/config.encrypted.json` a priorite sur `.env`. Solutions :
+```bash
+# Option 1 : Forcer l'utilisation de .env
+echo "FORCE_ENV_CONFIG=true" >> backend/.env
+
+# Option 2 : Supprimer le cache
+rm backend/data/config.encrypted.json
+
+# Puis redemarrer le backend
+```
+
+### La page de configuration charge en boucle
+
+1. Verifiez que le backend est bien demarre : `curl http://localhost:8000/api/health`
+2. Redemarrez le backend : `pkill -f uvicorn && cd backend && ./run.sh`
 
 ---
 

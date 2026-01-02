@@ -2,11 +2,8 @@ const API_BASE = '/api';
 
 export async function analyzeTicker(ticker) {
   try {
-    const response = await fetch(`${API_BASE}/analyze`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ticker })
-    });
+    // Backend uses GET with query parameter
+    const response = await fetch(`${API_BASE}/stocks/analyze?ticker=${encodeURIComponent(ticker)}`);
 
     if (!response.ok) {
       // Try to get error details from response
@@ -27,7 +24,7 @@ export async function analyzeTicker(ticker) {
 
 export async function analyzeBatch(tickers) {
   try {
-    const response = await fetch(`${API_BASE}/analyze-batch`, {
+    const response = await fetch(`${API_BASE}/stocks/analyze/batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tickers })
@@ -60,7 +57,7 @@ export async function getMarketTickers(market, limit = 10, offset = 0) {
 }
 
 // =============================================================================
-// SAXO API
+// SAXO API - Simplified (SaxoPortfolio component handles most calls directly)
 // =============================================================================
 
 export async function getSaxoStatus() {
@@ -68,80 +65,165 @@ export async function getSaxoStatus() {
   return response.json();
 }
 
-export async function getSaxoAuthUrl() {
-  const response = await fetch(`${API_BASE}/saxo/auth/url`);
-  if (!response.ok) throw new Error('Failed to get Saxo auth URL');
+// =============================================================================
+// DATA SOURCES API
+// =============================================================================
+
+export async function getDataSources() {
+  const response = await fetch(`${API_BASE}/sources`);
+  if (!response.ok) throw new Error('Failed to get data sources');
   return response.json();
 }
 
-export async function exchangeSaxoCode(code) {
-  const response = await fetch(`${API_BASE}/saxo/auth/callback?code=${code}`);
-  if (!response.ok) throw new Error('Failed to exchange Saxo code');
+export async function getSourcesHealth() {
+  const response = await fetch(`${API_BASE}/sources/status`);
+  if (!response.ok) throw new Error('Failed to get sources health');
   return response.json();
 }
 
-export async function getSaxoPortfolio(accessToken, analyze = true) {
-  const response = await fetch(
-    `${API_BASE}/saxo/portfolio?access_token=${accessToken}&analyze=${analyze}`
-  );
-  if (!response.ok) throw new Error('Failed to get Saxo portfolio');
-  return response.json();
-}
-
-export async function getSaxoOrders(accessToken, status = 'All') {
-  const response = await fetch(
-    `${API_BASE}/saxo/orders?access_token=${accessToken}&status=${status}`
-  );
-  if (!response.ok) throw new Error('Failed to get Saxo orders');
-  return response.json();
-}
-
-export async function getSaxoHistory(accessToken, days = 30) {
-  const response = await fetch(
-    `${API_BASE}/saxo/history?access_token=${accessToken}&days=${days}`
-  );
-  if (!response.ok) throw new Error('Failed to get Saxo history');
-  return response.json();
-}
-
-export async function placeSaxoOrder(accessToken, orderData) {
-  const response = await fetch(`${API_BASE}/saxo/orders?access_token=${accessToken}`, {
+export async function switchDataSource(source) {
+  const response = await fetch(`${API_BASE}/sources/switch`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(orderData)
+    body: JSON.stringify({ source })
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    // Handle validation errors from FastAPI
-    let errorMessage = 'Failed to place order';
-    if (error.detail) {
-      if (typeof error.detail === 'string') {
-        errorMessage = error.detail;
-      } else if (Array.isArray(error.detail)) {
-        errorMessage = error.detail.map(e => e.msg || e.message || JSON.stringify(e)).join(', ');
-      } else {
-        errorMessage = JSON.stringify(error.detail);
-      }
-    }
-    throw new Error(errorMessage);
+    throw new Error(error.detail || 'Failed to switch source');
   }
   return response.json();
 }
 
-export async function searchSaxoInstrument(accessToken, query, assetTypes = 'Stock,Etf') {
-  const response = await fetch(
-    `${API_BASE}/saxo/search?access_token=${accessToken}&query=${encodeURIComponent(query)}&asset_types=${assetTypes}`
-  );
-  if (!response.ok) throw new Error('Failed to search instrument');
+export async function getStreamerStats() {
+  const response = await fetch(`${API_BASE}/sources/stats`);
+  if (!response.ok) throw new Error('Failed to get streamer stats');
   return response.json();
 }
 
-export async function cancelSaxoOrder(accessToken, orderId, accountKey) {
+// =============================================================================
+// CONFIGURATION API
+// =============================================================================
+
+export async function getConfigStatus() {
+  const response = await fetch(`${API_BASE}/config/status`);
+  if (!response.ok) throw new Error('Failed to get config status');
+  return response.json();
+}
+
+export async function requestOTP(action) {
+  const response = await fetch(`${API_BASE}/config/otp/request`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action })
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || 'Failed to request OTP');
+  }
+  return response.json();
+}
+
+export async function setupTelegramInitial(botToken, chatId) {
   const response = await fetch(
-    `${API_BASE}/saxo/orders/${orderId}?access_token=${accessToken}&account_key=${accountKey}`,
-    { method: 'DELETE' }
+    `${API_BASE}/config/telegram/setup?bot_token=${encodeURIComponent(botToken)}&chat_id=${encodeURIComponent(chatId)}`,
+    { method: 'POST' }
   );
-  if (!response.ok) throw new Error('Failed to cancel order');
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || 'Failed to setup Telegram');
+  }
+  return response.json();
+}
+
+// Helper to extract error message from FastAPI response
+function extractErrorMessage(error, fallback) {
+  if (!error.detail) return fallback;
+  if (typeof error.detail === 'string') return error.detail;
+  if (Array.isArray(error.detail)) {
+    return error.detail.map(e => e.msg || e.message || JSON.stringify(e)).join(', ');
+  }
+  return JSON.stringify(error.detail);
+}
+
+export async function setupSaxoInitial(appKey, appSecret, environment = 'SIM', redirectUri = 'http://localhost:5173') {
+  const params = new URLSearchParams({
+    app_key: appKey,
+    app_secret: appSecret,
+    environment,
+    redirect_uri: redirectUri
+  });
+  const response = await fetch(`${API_BASE}/config/saxo/setup?${params}`, {
+    method: 'POST'
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(extractErrorMessage(error, 'Failed to setup Saxo'));
+  }
+  return response.json();
+}
+
+export async function updateSaxoConfig(otpCode, config) {
+  const response = await fetch(`${API_BASE}/config/saxo`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ otp_code: otpCode, ...config })
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(extractErrorMessage(error, 'Failed to update Saxo config'));
+  }
+  return response.json();
+}
+
+export async function updateTelegramConfig(otpCode, config) {
+  const response = await fetch(`${API_BASE}/config/telegram`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ otp_code: otpCode, ...config })
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(extractErrorMessage(error, 'Failed to update Telegram config'));
+  }
+  return response.json();
+}
+
+export async function switchSaxoEnvironment(otpCode, environment) {
+  const response = await fetch(`${API_BASE}/config/environment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ otp_code: otpCode, environment })
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(extractErrorMessage(error, 'Failed to switch environment'));
+  }
+  return response.json();
+}
+
+export async function deleteCredentials(otpCode, service) {
+  const response = await fetch(`${API_BASE}/config/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ otp_code: otpCode, service })
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(extractErrorMessage(error, 'Failed to delete credentials'));
+  }
+  return response.json();
+}
+
+export async function cancelOTP(action) {
+  const response = await fetch(`${API_BASE}/config/otp/cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action })
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(extractErrorMessage(error, 'Failed to cancel OTP'));
+  }
   return response.json();
 }
 

@@ -1,10 +1,10 @@
 """
-Module d'intégration Saxo Bank.
+Module d'integration Saxo Bank.
 
-Fournit l'implémentation complète du broker Saxo:
-- OAuth2 avec PKCE
+Fournit l'implementation complete du broker Saxo:
+- OAuth2 simplifie
 - Client API HTTP
-- Mappers pour conversion des données
+- Mappers pour conversion des donnees
 - Service broker complet
 """
 
@@ -12,10 +12,11 @@ from src.infrastructure.brokers.saxo.saxo_broker import (
     SaxoBroker,
     create_saxo_broker,
 )
-from src.infrastructure.brokers.saxo.saxo_oauth import (
-    SaxoOAuthService,
-    create_saxo_oauth_service,
-    TokenResponse,
+from src.infrastructure.brokers.saxo.saxo_auth import (
+    SaxoAuthService,
+    SaxoToken,
+    SaxoTokenManager,
+    get_saxo_auth,
 )
 from src.infrastructure.brokers.saxo.saxo_api_client import (
     SaxoApiClient,
@@ -26,10 +27,11 @@ __all__ = [
     # Broker principal
     "SaxoBroker",
     "create_saxo_broker",
-    # OAuth
-    "SaxoOAuthService",
-    "create_saxo_oauth_service",
-    "TokenResponse",
+    # Auth (nouveau)
+    "SaxoAuthService",
+    "SaxoToken",
+    "SaxoTokenManager",
+    "get_saxo_auth",
     # API Client
     "SaxoApiClient",
     "create_saxo_api_client",

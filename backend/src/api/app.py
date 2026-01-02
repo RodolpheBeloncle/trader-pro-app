@@ -37,6 +37,14 @@ from src.api.routes import (
     markets_router,
     websocket_router,
     recommendations_router,
+    alerts_router,
+    journal_router,
+    news_router,
+    backtest_router,
+    sources_router,
+    saxo_router,
+    notifications_router,
+    config_router,
 )
 from src.domain.exceptions import (
     DomainError,
@@ -202,6 +210,14 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(brokers_router, prefix="/api")
     app.include_router(markets_router, prefix="/api")
     app.include_router(recommendations_router, prefix="/api")
+    app.include_router(alerts_router, prefix="/api")
+    app.include_router(journal_router, prefix="/api")
+    app.include_router(news_router, prefix="/api")
+    app.include_router(backtest_router, prefix="/api")
+    app.include_router(sources_router, prefix="/api")
+    app.include_router(saxo_router, prefix="/api")
+    app.include_router(notifications_router, prefix="/api")
+    app.include_router(config_router, prefix="/api")
 
     # WebSocket routes (pas de prefixe /api)
     app.include_router(websocket_router)
@@ -218,12 +234,29 @@ def configure_lifecycle(app: FastAPI) -> None:
     """
     from src.jobs.scheduler import create_scheduler, start_scheduler, stop_scheduler
     from src.infrastructure.websocket.ws_manager import get_ws_manager
-    from src.infrastructure.websocket.price_streamer import get_price_streamer
+    from src.infrastructure.websocket.hybrid_streamer import get_hybrid_streamer
+    from src.infrastructure.database.connection import init_database, close_database
 
     @app.on_event("startup")
     async def startup():
         """Evenement de demarrage."""
         logger.info("Application starting up...")
+
+        # Charger la configuration (fichier chiffré ou .env)
+        # et appliquer aux settings globaux
+        try:
+            from src.application.services.config_service import get_config_service
+            get_config_service()  # Initialise et applique les credentials
+            logger.info("Configuration service initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize config service: {e}")
+
+        # Initialiser la base de données SQLite
+        try:
+            await init_database()
+            logger.info("Database initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
 
         # Verifier la configuration
         settings = get_settings()
@@ -233,6 +266,16 @@ def configure_lifecycle(app: FastAPI) -> None:
         else:
             logger.warning("Saxo broker NOT configured")
 
+        if settings.is_telegram_configured:
+            logger.info("Telegram notifications configured")
+        else:
+            logger.warning("Telegram NOT configured")
+
+        if settings.is_finnhub_configured:
+            logger.info("Finnhub news API configured")
+        else:
+            logger.warning("Finnhub NOT configured")
+
         # Demarrer le scheduler de jobs
         try:
             scheduler = create_scheduler()
@@ -241,12 +284,12 @@ def configure_lifecycle(app: FastAPI) -> None:
         except Exception as e:
             logger.error(f"Failed to start scheduler: {e}")
 
-        # Demarrer le price streamer
+        # Demarrer le hybrid price streamer
         try:
             ws_manager = get_ws_manager()
-            price_streamer = get_price_streamer(ws_manager)
+            price_streamer = get_hybrid_streamer(ws_manager)
             await price_streamer.start()
-            logger.info("Price streamer started")
+            logger.info("Hybrid price streamer started")
         except Exception as e:
             logger.error(f"Failed to start price streamer: {e}")
 
@@ -257,11 +300,11 @@ def configure_lifecycle(app: FastAPI) -> None:
         """Evenement d'arret."""
         logger.info("Application shutting down...")
 
-        # Arreter le price streamer
+        # Arreter le hybrid price streamer
         try:
-            price_streamer = get_price_streamer()
+            price_streamer = get_hybrid_streamer()
             await price_streamer.stop()
-            logger.info("Price streamer stopped")
+            logger.info("Hybrid price streamer stopped")
         except Exception as e:
             logger.error(f"Error stopping price streamer: {e}")
 
@@ -271,6 +314,13 @@ def configure_lifecycle(app: FastAPI) -> None:
             logger.info("Background job scheduler stopped")
         except Exception as e:
             logger.error(f"Error stopping scheduler: {e}")
+
+        # Fermer la connexion à la base de données
+        try:
+            await close_database()
+            logger.info("Database connection closed")
+        except Exception as e:
+            logger.error(f"Error closing database: {e}")
 
         # Nettoyer les ressources si necessaire
         from src.api.dependencies import clear_caches

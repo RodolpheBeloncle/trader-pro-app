@@ -1,10 +1,14 @@
+import { useState } from 'react'
+import { TrendingUp, Calendar, DollarSign, CandlestickChart, LineChart } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import { TrendingUp, Calendar, DollarSign } from 'lucide-react'
+import TradingViewChart from './charts/TradingViewChart'
 
 export default function StockChart({ stock }) {
+  const [chartType, setChartType] = useState('candlestick') // 'candlestick' or 'area'
+
   if (!stock) {
     return (
-      <div className="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-xl p-6 h-[400px] flex items-center justify-center">
+      <div className="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-xl p-6 h-[500px] flex items-center justify-center">
         <div className="text-center text-slate-400">
           <TrendingUp className="w-12 h-12 mx-auto mb-3 opacity-50" />
           <p>Select a stock to view its chart</p>
@@ -13,39 +17,48 @@ export default function StockChart({ stock }) {
     )
   }
 
-  const chartData = stock.chart_data || []
-  const minPrice = Math.min(...chartData.map(d => d.price)) * 0.95
-  const maxPrice = Math.max(...chartData.map(d => d.price)) * 1.05
-
-  const CustomTooltip = ({ active, payload, label }) => {
-    if (active && payload && payload.length) {
-      return (
-        <div className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 shadow-xl">
-          <p className="text-slate-400 text-xs mb-1">{label}</p>
-          <p className="text-white font-semibold">
-            {stock.currency} {payload[0].value.toLocaleString()}
-          </p>
-        </div>
-      )
-    }
-    return null
-  }
-
   return (
     <div className="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-xl p-6">
       {/* Header */}
       <div className="mb-4">
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-xl font-bold">{stock.ticker}</h3>
-          <span className={`
-            px-3 py-1 rounded-full text-sm font-medium
-            ${stock.is_resilient
-              ? 'bg-emerald-500/20 text-emerald-400'
-              : 'bg-red-500/20 text-red-400'
-            }
-          `}>
-            {stock.is_resilient ? 'Resilient' : 'Not Resilient'}
-          </span>
+          <div className="flex items-center gap-2">
+            {/* Chart type toggle */}
+            <div className="flex bg-slate-700/50 rounded-lg p-1">
+              <button
+                onClick={() => setChartType('candlestick')}
+                className={`p-1.5 rounded ${
+                  chartType === 'candlestick'
+                    ? 'bg-slate-600 text-white'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+                title="Candlestick Chart"
+              >
+                <CandlestickChart className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setChartType('area')}
+                className={`p-1.5 rounded ${
+                  chartType === 'area'
+                    ? 'bg-slate-600 text-white'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+                title="Area Chart"
+              >
+                <LineChart className="w-4 h-4" />
+              </button>
+            </div>
+            <span className={`
+              px-3 py-1 rounded-full text-sm font-medium
+              ${stock.is_resilient
+                ? 'bg-emerald-500/20 text-emerald-400'
+                : 'bg-red-500/20 text-red-400'
+              }
+            `}>
+              {stock.is_resilient ? 'Resilient' : 'Not Resilient'}
+            </span>
+          </div>
         </div>
         <p className="text-slate-400 text-sm truncate">{stock.name}</p>
       </div>
@@ -72,50 +85,16 @@ export default function StockChart({ stock }) {
         </div>
       </div>
 
-      {/* Chart */}
-      <div className="h-[200px]">
-        {chartData.length > 0 ? (
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chartData}>
-              <defs>
-                <linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
-                  <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                </linearGradient>
-              </defs>
-              <XAxis
-                dataKey="date"
-                tickFormatter={(d) => d.substring(0, 7)}
-                tick={{ fill: '#64748b', fontSize: 10 }}
-                axisLine={{ stroke: '#334155' }}
-                tickLine={false}
-                interval="preserveStartEnd"
-              />
-              <YAxis
-                domain={[minPrice, maxPrice]}
-                tick={{ fill: '#64748b', fontSize: 10 }}
-                axisLine={{ stroke: '#334155' }}
-                tickLine={false}
-                tickFormatter={(v) => v.toFixed(0)}
-                width={50}
-              />
-              <Tooltip content={<CustomTooltip />} />
-              <Area
-                type="monotone"
-                dataKey="price"
-                stroke="#10b981"
-                strokeWidth={2}
-                fillOpacity={1}
-                fill="url(#colorPrice)"
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-        ) : (
-          <div className="flex items-center justify-center h-full text-slate-400">
-            No chart data available
-          </div>
-        )}
-      </div>
+      {/* Chart - TradingView Candlestick or Area */}
+      {chartType === 'candlestick' ? (
+        <TradingViewChart
+          ticker={stock.ticker}
+          height={300}
+          showVolume={true}
+        />
+      ) : (
+        <SimpleAreaChart stock={stock} />
+      )}
 
       {/* Additional info */}
       {(stock.sector || stock.dividend_yield) && (
@@ -142,6 +121,76 @@ export default function StockChart({ stock }) {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// Fallback simple area chart using the existing chart_data
+function SimpleAreaChart({ stock }) {
+  const chartData = stock.chart_data || []
+
+  if (chartData.length === 0) {
+    return (
+      <div className="h-[300px] flex items-center justify-center text-slate-400">
+        No chart data available
+      </div>
+    )
+  }
+
+  const minPrice = Math.min(...chartData.map(d => d.price)) * 0.95
+  const maxPrice = Math.max(...chartData.map(d => d.price)) * 1.05
+
+  const CustomTooltip = ({ active, payload, label }) => {
+    if (active && payload && payload.length) {
+      return (
+        <div className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 shadow-xl">
+          <p className="text-slate-400 text-xs mb-1">{label}</p>
+          <p className="text-white font-semibold">
+            {stock.currency} {payload[0].value.toLocaleString()}
+          </p>
+        </div>
+      )
+    }
+    return null
+  }
+
+  return (
+    <div className="h-[300px]">
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart data={chartData}>
+          <defs>
+            <linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+              <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+            </linearGradient>
+          </defs>
+          <XAxis
+            dataKey="date"
+            tickFormatter={(d) => d.substring(0, 7)}
+            tick={{ fill: '#64748b', fontSize: 10 }}
+            axisLine={{ stroke: '#334155' }}
+            tickLine={false}
+            interval="preserveStartEnd"
+          />
+          <YAxis
+            domain={[minPrice, maxPrice]}
+            tick={{ fill: '#64748b', fontSize: 10 }}
+            axisLine={{ stroke: '#334155' }}
+            tickLine={false}
+            tickFormatter={(v) => v.toFixed(0)}
+            width={50}
+          />
+          <Tooltip content={<CustomTooltip />} />
+          <Area
+            type="monotone"
+            dataKey="price"
+            stroke="#10b981"
+            strokeWidth={2}
+            fillOpacity={1}
+            fill="url(#colorPrice)"
+          />
+        </AreaChart>
+      </ResponsiveContainer>
     </div>
   )
 }

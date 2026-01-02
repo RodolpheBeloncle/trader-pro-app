@@ -26,6 +26,7 @@ from src.application.use_cases import (
     AnalyzeStockResult,
     BatchResult,
 )
+from src.application.use_cases.get_ohlc_data import GetOHLCDataUseCase
 from src.domain.exceptions import (
     TickerNotFoundError,
     DataFetchError,
@@ -111,6 +112,32 @@ class BatchAnalyzeResponse(BaseModel):
     error_count: int
 
 
+class OHLCCandleResponse(BaseModel):
+    """Un point de donnees candlestick."""
+
+    time: int
+    open: float
+    high: float
+    low: float
+    close: float
+
+
+class OHLCVolumeResponse(BaseModel):
+    """Un point de donnees volume."""
+
+    time: int
+    value: int
+    color: str
+
+
+class OHLCDataResponse(BaseModel):
+    """Reponse avec donnees OHLC pour TradingView."""
+
+    ticker: str
+    candles: List[OHLCCandleResponse]
+    volume: List[OHLCVolumeResponse]
+
+
 # =============================================================================
 # DEPENDENCY INJECTION
 # =============================================================================
@@ -166,35 +193,38 @@ async def analyze_stock(
 
     analysis = result.analysis
 
+    # Extraire les valeurs primitives des Value Objects
+    perf = analysis.performances
+
     return StockAnalysisResponse(
-        ticker=analysis.ticker,
+        ticker=analysis.ticker.value if hasattr(analysis.ticker, 'value') else str(analysis.ticker),
         info=StockInfoResponse(
             name=analysis.info.name,
             currency=analysis.info.currency,
             exchange=analysis.info.exchange,
             sector=analysis.info.sector,
             industry=analysis.info.industry,
-            asset_type=analysis.info.asset_type,
-            dividend_yield=analysis.info.dividend_yield,
+            asset_type=analysis.info.asset_type.value if analysis.info.asset_type else None,
+            dividend_yield=analysis.info.dividend_yield.as_percent if analysis.info.dividend_yield else None,
         ),
         performances=PerformanceResponse(
-            perf_3m=analysis.performances.perf_3m,
-            perf_6m=analysis.performances.perf_6m,
-            perf_1y=analysis.performances.perf_1y,
-            perf_3y=analysis.performances.perf_3y,
-            perf_5y=analysis.performances.perf_5y,
+            perf_3m=perf.perf_3m.as_percent if perf.perf_3m else None,
+            perf_6m=perf.perf_6m.as_percent if perf.perf_6m else None,
+            perf_1y=perf.perf_1y.as_percent if perf.perf_1y else None,
+            perf_3y=perf.perf_3y.as_percent if perf.perf_3y else None,
+            perf_5y=perf.perf_5y.as_percent if perf.perf_5y else None,
         ),
-        current_price=analysis.current_price,
-        currency=analysis.currency,
-        volatility=analysis.volatility,
+        current_price=analysis.current_price.amount if hasattr(analysis.current_price, 'amount') else float(analysis.current_price),
+        currency=analysis.current_price.currency if hasattr(analysis.current_price, 'currency') else analysis.info.currency,
+        volatility=analysis.volatility.as_percent if analysis.volatility else None,
         is_resilient=analysis.is_resilient,
-        volatility_level=analysis.volatility_level,
+        volatility_level=analysis.volatility_level.value if hasattr(analysis.volatility_level, 'value') else analysis.volatility_level,
         score=analysis.score,
         chart_data=[
-            ChartDataPointResponse(date=p.date, price=p.price)
+            ChartDataPointResponse(date=p.date.strftime("%Y-%m-%d") if hasattr(p.date, 'strftime') else p.date, price=p.price)
             for p in analysis.chart_data
         ],
-        analyzed_at=analysis.analyzed_at,
+        analyzed_at=analysis.analyzed_at.isoformat() if hasattr(analysis.analyzed_at, 'isoformat') else str(analysis.analyzed_at),
     )
 
 
@@ -223,35 +253,36 @@ async def analyze_batch(
     for r in batch_result.results:
         if r.is_success and r.analysis:
             analysis = r.analysis
+            perf = analysis.performances
             results.append(StockAnalysisResponse(
-                ticker=analysis.ticker,
+                ticker=analysis.ticker.value if hasattr(analysis.ticker, 'value') else str(analysis.ticker),
                 info=StockInfoResponse(
                     name=analysis.info.name,
                     currency=analysis.info.currency,
                     exchange=analysis.info.exchange,
                     sector=analysis.info.sector,
                     industry=analysis.info.industry,
-                    asset_type=analysis.info.asset_type,
-                    dividend_yield=analysis.info.dividend_yield,
+                    asset_type=analysis.info.asset_type.value if analysis.info.asset_type else None,
+                    dividend_yield=analysis.info.dividend_yield.as_percent if analysis.info.dividend_yield else None,
                 ),
                 performances=PerformanceResponse(
-                    perf_3m=analysis.performances.perf_3m,
-                    perf_6m=analysis.performances.perf_6m,
-                    perf_1y=analysis.performances.perf_1y,
-                    perf_3y=analysis.performances.perf_3y,
-                    perf_5y=analysis.performances.perf_5y,
+                    perf_3m=perf.perf_3m.as_percent if perf.perf_3m else None,
+                    perf_6m=perf.perf_6m.as_percent if perf.perf_6m else None,
+                    perf_1y=perf.perf_1y.as_percent if perf.perf_1y else None,
+                    perf_3y=perf.perf_3y.as_percent if perf.perf_3y else None,
+                    perf_5y=perf.perf_5y.as_percent if perf.perf_5y else None,
                 ),
-                current_price=analysis.current_price,
-                currency=analysis.currency,
-                volatility=analysis.volatility,
+                current_price=analysis.current_price.amount if hasattr(analysis.current_price, 'amount') else float(analysis.current_price),
+                currency=analysis.current_price.currency if hasattr(analysis.current_price, 'currency') else analysis.info.currency,
+                volatility=analysis.volatility.as_percent if analysis.volatility else None,
                 is_resilient=analysis.is_resilient,
-                volatility_level=analysis.volatility_level,
+                volatility_level=analysis.volatility_level.value if hasattr(analysis.volatility_level, 'value') else analysis.volatility_level,
                 score=analysis.score,
                 chart_data=[
-                    ChartDataPointResponse(date=p.date, price=p.price)
+                    ChartDataPointResponse(date=p.date.strftime("%Y-%m-%d") if hasattr(p.date, 'strftime') else p.date, price=p.price)
                     for p in analysis.chart_data
                 ],
-                analyzed_at=analysis.analyzed_at,
+                analyzed_at=analysis.analyzed_at.isoformat() if hasattr(analysis.analyzed_at, 'isoformat') else str(analysis.analyzed_at),
             ))
         else:
             errors.append(StockErrorResponse(
@@ -350,3 +381,71 @@ async def export_csv(
             "Content-Disposition": "attachment; filename=stocks_analysis.csv",
         },
     )
+
+
+# =============================================================================
+# OHLC DATA FOR TRADINGVIEW
+# =============================================================================
+
+async def get_ohlc_use_case() -> GetOHLCDataUseCase:
+    """Factory pour le use case OHLC."""
+    from src.infrastructure.providers.yahoo_finance_provider import YahooFinanceProvider
+    provider = YahooFinanceProvider()
+    return GetOHLCDataUseCase(provider)
+
+
+@router.get(
+    "/ohlc/{ticker}",
+    response_model=OHLCDataResponse,
+    responses={
+        404: {"description": "Ticker non trouve"},
+        500: {"description": "Erreur serveur"},
+    },
+)
+async def get_ohlc_data(
+    ticker: str,
+    days: int = Query(
+        365,
+        ge=30,
+        le=1825,
+        description="Nombre de jours d'historique (30-1825)",
+    ),
+    use_case: GetOHLCDataUseCase = Depends(get_ohlc_use_case),
+):
+    """
+    Recupere les donnees OHLC pour un graphique candlestick.
+
+    Retourne les donnees formatees pour TradingView lightweight-charts:
+    - candles: Array de {time, open, high, low, close}
+    - volume: Array de {time, value, color}
+
+    Args:
+        ticker: Symbole boursier (ex: AAPL, MSFT)
+        days: Nombre de jours d'historique (30 a 1825)
+    """
+    try:
+        result = await use_case.execute(ticker.upper(), days)
+
+        if not result["candles"]:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Aucune donnee OHLC disponible pour {ticker}"
+            )
+
+        return OHLCDataResponse(
+            ticker=result["ticker"],
+            candles=[
+                OHLCCandleResponse(**c) for c in result["candles"]
+            ],
+            volume=[
+                OHLCVolumeResponse(**v) for v in result["volume"]
+            ],
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur lors de la recuperation des donnees OHLC: {str(e)}"
+        )

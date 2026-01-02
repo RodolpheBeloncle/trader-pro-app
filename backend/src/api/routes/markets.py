@@ -33,6 +33,7 @@ class MarketPresetResponse(BaseModel):
 
     id: str
     name: str
+    type: str
     count: int
     description: str = ""
 
@@ -44,11 +45,13 @@ class MarketsListResponse(BaseModel):
 
 
 class MarketTickersResponse(BaseModel):
-    """Tickers d'un marché."""
+    """Tickers d'un marché avec pagination."""
 
     market: str
+    name: str
     tickers: List[str]
     total: int
+    has_more: bool
 
 
 # =============================================================================
@@ -96,6 +99,7 @@ async def get_markets():
         MarketPresetResponse(
             id=market_id,
             name=market_data.get("name", market_id),
+            type=market_data.get("type", "stocks"),
             count=len(market_data.get("tickers", [])),
             description=market_data.get("description", ""),
         )
@@ -111,7 +115,7 @@ async def get_markets():
 )
 async def get_market_tickers(market_id: str):
     """
-    Recupere les tickers d'un preset de marche.
+    Recupere tous les tickers d'un preset de marche (sans pagination).
     """
     data = load_markets_data()
     markets_dict = data.get("markets", {})
@@ -127,18 +131,24 @@ async def get_market_tickers(market_id: str):
 
     return MarketTickersResponse(
         market=market_id,
+        name=market.get("name", market_id),
         tickers=tickers,
         total=len(tickers),
+        has_more=False,
     )
 
 
 @router.get(
     "/{market_id}",
-    response_model=MarketPresetResponse,
+    response_model=MarketTickersResponse,
 )
-async def get_market_details(market_id: str):
+async def get_market_tickers_paginated(
+    market_id: str,
+    limit: int = 10,
+    offset: int = 0,
+):
     """
-    Recupere les details d'un preset de marche.
+    Recupere les tickers d'un preset de marche avec pagination.
     """
     data = load_markets_data()
     markets_dict = data.get("markets", {})
@@ -150,9 +160,17 @@ async def get_market_details(market_id: str):
         )
 
     market = markets_dict[market_id]
-    return MarketPresetResponse(
-        id=market_id,
+    all_tickers = market.get("tickers", [])
+    total = len(all_tickers)
+
+    # Pagination
+    paginated_tickers = all_tickers[offset:offset + limit]
+    has_more = (offset + limit) < total
+
+    return MarketTickersResponse(
+        market=market_id,
         name=market.get("name", market_id),
-        count=len(market.get("tickers", [])),
-        description=market.get("description", ""),
+        tickers=paginated_tickers,
+        total=total,
+        has_more=has_more,
     )

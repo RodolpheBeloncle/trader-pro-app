@@ -103,6 +103,14 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
+    # CONFIGURATION CACHE
+    # ==========================================================================
+    FORCE_ENV_CONFIG: bool = Field(
+        default=False,
+        description="Force l'utilisation des variables .env au lieu du fichier chiffré"
+    )
+
+    # ==========================================================================
     # CHEMINS
     # ==========================================================================
     DATA_DIR: str = Field(
@@ -116,6 +124,30 @@ class Settings(BaseSettings):
     MARKETS_FILE: str = Field(
         default="markets.json",
         description="Nom du fichier des presets de marchés"
+    )
+    DATABASE_PATH: str = Field(
+        default="data/stock_analyzer.db",
+        description="Chemin de la base de données SQLite"
+    )
+
+    # ==========================================================================
+    # TELEGRAM (pour les alertes)
+    # ==========================================================================
+    TELEGRAM_BOT_TOKEN: Optional[str] = Field(
+        default=None,
+        description="Token du bot Telegram (obtenu via @BotFather)"
+    )
+    TELEGRAM_CHAT_ID: Optional[str] = Field(
+        default=None,
+        description="ID du chat Telegram pour recevoir les alertes"
+    )
+
+    # ==========================================================================
+    # FINNHUB (pour les actualités)
+    # ==========================================================================
+    FINNHUB_API_KEY: Optional[str] = Field(
+        default=None,
+        description="Clé API Finnhub (gratuit: 60 req/min)"
     )
 
     # ==========================================================================
@@ -167,6 +199,16 @@ class Settings(BaseSettings):
     def is_saxo_configured(self) -> bool:
         """Vérifie si Saxo Bank est configuré."""
         return bool(self.SAXO_APP_KEY and self.SAXO_APP_SECRET)
+
+    @property
+    def is_telegram_configured(self) -> bool:
+        """Vérifie si Telegram est configuré."""
+        return bool(self.TELEGRAM_BOT_TOKEN and self.TELEGRAM_CHAT_ID)
+
+    @property
+    def is_finnhub_configured(self) -> bool:
+        """Vérifie si Finnhub est configuré."""
+        return bool(self.FINNHUB_API_KEY)
 
     @property
     def tokens_path(self) -> str:

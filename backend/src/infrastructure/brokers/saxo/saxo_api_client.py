@@ -228,23 +228,51 @@ class SaxoApiClient:
     # API ENDPOINTS - PORTFOLIO
     # =========================================================================
 
-    def get_net_positions(self, access_token: str, client_key: str) -> List[Dict[str, Any]]:
+    def get_positions(self, access_token: str, client_key: str) -> List[Dict[str, Any]]:
         """
-        Récupère les positions nettes.
+        Récupère les positions avec tous les details (prix, P&L, symboles).
+
+        Utilise /port/v1/positions/me qui retourne plus de details que /netpositions.
 
         Args:
             access_token: Token d'accès
             client_key: Clé du client
 
         Returns:
-            Liste des positions
+            Liste des positions avec prix, P&L, symboles, etc.
         """
+        # FieldGroups pour /positions:
+        # - PositionBase: Uic, Amount, AssetType, AccountId, OpenPrice
+        # - PositionView: CurrentPrice, ProfitLossOnTrade, Exposure, MarketValue
+        # - DisplayAndFormat: Symbol, Description, Currency
         response = self.get(
             access_token,
-            "/port/v1/netpositions",
-            params={"ClientKey": client_key},
+            "/port/v1/positions/me",
+            params={
+                "ClientKey": client_key,
+                "FieldGroups": "PositionBase,PositionView,DisplayAndFormat",
+            },
         )
-        return response.data.get("Data", [])
+
+        positions = response.data.get("Data", [])
+
+        # Debug log
+        if positions:
+            logger.info(f"Saxo positions: {len(positions)} positions")
+            logger.info(f"Sample position keys: {list(positions[0].keys())}")
+            # Log complet pour debug
+            import json
+            logger.info(f"Sample position FULL: {json.dumps(positions[0], indent=2, default=str)}")
+        else:
+            logger.warning("Saxo positions: empty response")
+
+        return positions
+
+    def get_net_positions(self, access_token: str, client_key: str) -> List[Dict[str, Any]]:
+        """
+        Alias pour compatibilité - utilise get_positions().
+        """
+        return self.get_positions(access_token, client_key)
 
     def get_balances(self, access_token: str, client_key: str) -> Dict[str, Any]:
         """
