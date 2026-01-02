@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { RefreshCw, Download, Plus, TrendingUp, ChevronDown, BarChart3, Coins, PieChart, Wallet, Settings } from 'lucide-react'
-import { analyzeTicker, analyzeBatch, getMarkets, getMarketTickers, exportCSVFromData } from './api'
+import { analyzeTicker, analyzeBatch, getMarkets, getMarketTickers, exportCSVFromData, searchTickers } from './api'
 import StockTable from './components/StockTable'
 import StockChart from './components/StockChart'
 import Filters from './components/Filters'
@@ -15,6 +15,9 @@ const processOAuthCallback = async () => {
   const state = urlParams.get('state')
 
   if (!code) return null
+
+  // IMPORTANT: Nettoyer l'URL immédiatement pour éviter les doubles appels lors d'un refresh
+  window.history.replaceState({}, '', window.location.pathname)
 
   console.log('App: Processing OAuth callback with code:', code.substring(0, 20) + '...')
 
@@ -38,9 +41,6 @@ const processOAuthCallback = async () => {
 
     console.log('App: OAuth callback response:', response.status, data)
 
-    // Clean URL
-    window.history.replaceState({}, '', window.location.pathname)
-
     if (!response.ok) {
       const errorMsg = data.detail || data.error_description || data.error || `Erreur ${response.status}`
       return { error: typeof errorMsg === 'object' ? JSON.stringify(errorMsg) : errorMsg }
@@ -53,7 +53,6 @@ const processOAuthCallback = async () => {
     return { error: data.detail || 'Réponse inattendue' }
   } catch (err) {
     console.error('App: OAuth callback exception:', err)
-    window.history.replaceState({}, '', window.location.pathname)
     return { error: 'Échec de connexion: ' + err.message }
   }
 }
@@ -128,12 +127,31 @@ function App() {
     if (!tickerInput.trim()) return
     setLoading(true)
     setError(null)
+
+    const input = tickerInput.trim()
+
+    // Détecter si c'est probablement un nom (contient des espaces ou > 6 caractères)
+    const isProbablyName = input.includes(' ') || input.length > 6
+
     try {
-      const result = await analyzeTicker(tickerInput.trim())
+      // Essayer d'abord comme un ticker direct
+      const result = await analyzeTicker(input)
       if (result.error) {
-        setError(`Error analyzing ${tickerInput}: ${result.error}`)
+        // Si échec et c'est probablement un nom, essayer la recherche
+        if (isProbablyName) {
+          const searchResult = await searchTickers(input, activeTab)
+          if (searchResult.results && searchResult.results.length > 0) {
+            const suggestions = searchResult.results.slice(0, 3).map(r => r.symbol).join(', ')
+            setError(`"${input}" n'est pas un symbole valide. Essayez: ${suggestions}`)
+          } else {
+            setError(`"${input}" non trouvé. Entrez un symbole de ticker (ex: AAPL, MSFT, IWDA.AS)`)
+          }
+        } else {
+          setError(`Ticker "${input}" non trouvé`)
+        }
       } else {
-        const flatResult = flattenStockData(result)
+        // Ajouter l'assetType (onglet actif) au ticker ajouté manuellement
+        const flatResult = { ...flattenStockData(result), assetType: activeTab }
         setStocks(prev => {
           const exists = prev.find(s => s.ticker === flatResult.ticker)
           if (exists) {
@@ -141,10 +159,25 @@ function App() {
           }
           return [...prev, flatResult]
         })
+        setTickerInput('')
       }
-      setTickerInput('')
     } catch (err) {
-      setError(err.message)
+      // En cas d'erreur, essayer la recherche pour donner des suggestions
+      if (isProbablyName) {
+        try {
+          const searchResult = await searchTickers(input, activeTab)
+          if (searchResult.results && searchResult.results.length > 0) {
+            const suggestions = searchResult.results.slice(0, 3).map(r => `${r.symbol} (${r.name})`).join(', ')
+            setError(`Essayez un de ces symboles: ${suggestions}`)
+          } else {
+            setError(`"${input}" non trouvé. Entrez un symbole de ticker valide.`)
+          }
+        } catch {
+          setError(err.message)
+        }
+      } else {
+        setError(err.message)
+      }
     } finally {
       setLoading(false)
     }
@@ -166,7 +199,11 @@ function App() {
 
       const marketData = await getMarketTickers(marketId, limit, offset)
       const result = await analyzeBatch(marketData.tickers)
-      const newStocks = result.results.filter(r => !r.error).map(flattenStockData)
+      // Ajouter l'assetType (onglet actif) à chaque stock
+      const newStocks = result.results.filter(r => !r.error).map(s => ({
+        ...flattenStockData(s),
+        assetType: activeTab
+      }))
 
       setStocks(prev => {
         const existing = new Set(prev.map(s => s.ticker))
@@ -197,13 +234,25 @@ function App() {
   }
 
   const refreshAll = async () => {
-    if (stocks.length === 0) return
+    // Filtrer les stocks de l'onglet actif
+    const stocksToRefresh = stocks.filter(s => s.assetType === activeTab)
+    if (stocksToRefresh.length === 0) return
+
     setLoading(true)
     setError(null)
     try {
-      const tickers = stocks.map(s => s.ticker)
+      const tickers = stocksToRefresh.map(s => s.ticker)
       const result = await analyzeBatch(tickers)
-      setStocks(result.results.filter(r => !r.error).map(flattenStockData))
+      const refreshedStocks = result.results.filter(r => !r.error).map(s => ({
+        ...flattenStockData(s),
+        assetType: activeTab
+      }))
+
+      // Mettre à jour seulement les stocks de l'onglet actif
+      setStocks(prev => {
+        const otherStocks = prev.filter(s => s.assetType !== activeTab)
+        return [...otherStocks, ...refreshedStocks]
+      })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -230,13 +279,18 @@ function App() {
     setActiveTab('saxo')
   }
 
+  // Filtrer les stocks par onglet actif ET par les filtres utilisateur
   const filteredStocks = stocks.filter(stock => {
+    // Filtrer par type d'actif (onglet actif)
+    if (stock.assetType && stock.assetType !== activeTab) return false
+    // Filtres utilisateur
     if (filters.resilientOnly && !stock.is_resilient) return false
     if (stock.volatility > filters.maxVolatility) return false
     return true
   })
 
-  const resilientCount = stocks.filter(s => s.is_resilient).length
+  // Compter les stocks résilients de l'onglet actif seulement
+  const resilientCount = filteredStocks.filter(s => s.is_resilient).length
 
   return (
     <div className="min-h-screen p-6">
@@ -274,7 +328,7 @@ function App() {
               value={tickerInput}
               onChange={(e) => setTickerInput(e.target.value.toUpperCase())}
               onKeyDown={(e) => e.key === 'Enter' && addTicker()}
-              placeholder="Enter ticker (e.g., AAPL, MSFT)"
+              placeholder="Symbole ticker (ex: AAPL, MSFT, IWDA.AS)"
               className="flex-1 bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-2.5 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
             />
             <button
@@ -402,7 +456,7 @@ function App() {
             <div className="flex gap-3">
               <button
                 onClick={refreshAll}
-                disabled={loading || stocks.length === 0}
+                disabled={loading || filteredStocks.length === 0}
                 className="bg-slate-700/50 hover:bg-slate-600/50 disabled:opacity-50 border border-slate-600 px-4 py-2 rounded-lg flex items-center gap-2"
               >
                 <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
@@ -410,7 +464,7 @@ function App() {
               </button>
               <button
                 onClick={handleExportCSV}
-                disabled={stocks.length === 0}
+                disabled={filteredStocks.length === 0}
                 className="bg-slate-700/50 hover:bg-slate-600/50 disabled:opacity-50 border border-slate-600 px-4 py-2 rounded-lg flex items-center gap-2"
               >
                 <Download className="w-4 h-4" />
@@ -433,7 +487,7 @@ function App() {
           <>
             <div className="flex items-center gap-4 mb-4">
               <span className="text-slate-400">
-                Showing <span className="text-white font-semibold">{filteredStocks.length}</span> of {stocks.length} stocks
+                Showing <span className="text-white font-semibold">{filteredStocks.length}</span> {activeTab === 'etfs' ? 'ETFs' : activeTab === 'crypto' ? 'cryptos' : 'actions'}
               </span>
               <span className="text-slate-500">|</span>
               <span className="text-emerald-400">

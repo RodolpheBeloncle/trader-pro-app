@@ -92,10 +92,7 @@ class YahooFinanceProvider(StockDataProvider):
             hist = yf_ticker.history(start=start_date, end=end_date)
 
             if hist.empty:
-                raise TickerNotFoundError(
-                    ticker.value,
-                    f"Aucune donnée disponible pour {ticker.value}"
-                )
+                raise TickerNotFoundError(ticker.value)
 
             # Conversion au format attendu
             data_points: List[HistoricalDataPoint] = []
@@ -144,10 +141,7 @@ class YahooFinanceProvider(StockDataProvider):
             hist = yf_ticker.history(period="5d")
 
             if hist.empty:
-                raise TickerNotFoundError(
-                    ticker.value,
-                    f"Aucune donnée disponible pour {ticker.value}"
-                )
+                raise TickerNotFoundError(ticker.value)
 
             current_price = float(hist['Close'].iloc[-1])
             previous_close = float(hist['Close'].iloc[-2]) if len(hist) > 1 else current_price
@@ -199,10 +193,7 @@ class YahooFinanceProvider(StockDataProvider):
             info = self._get_ticker_info(yf_ticker)
 
             if not info:
-                raise TickerNotFoundError(
-                    ticker.value,
-                    f"Aucune information disponible pour {ticker.value}"
-                )
+                raise TickerNotFoundError(ticker.value)
 
             # Déterminer le type d'actif
             quote_type = info.get('quoteType', '').upper()

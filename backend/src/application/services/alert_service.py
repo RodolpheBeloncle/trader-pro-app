@@ -217,9 +217,11 @@ class AlertService:
                 await self._alert_repo.mark_triggered(alert.id)
 
                 # Envoyer la notification
+                # Gerer le cas où alert_type est déjà une string ou un enum
+                alert_type_str = alert.alert_type.value if hasattr(alert.alert_type, 'value') else str(alert.alert_type)
                 sent = await self._telegram.send_alert(
                     ticker=alert.ticker,
-                    alert_type=alert.alert_type.value,
+                    alert_type=alert_type_str,
                     current_price=current_price,
                     target_value=alert.target_value,
                     notes=alert.notes,
@@ -283,9 +285,10 @@ class AlertService:
                 # Récupérer le prix actuel pour le message
                 quote = await self._price_provider.get_current_quote(alert.ticker)
 
+                alert_type_str = alert.alert_type.value if hasattr(alert.alert_type, 'value') else str(alert.alert_type)
                 sent = await self._telegram.send_alert(
                     ticker=alert.ticker,
-                    alert_type=alert.alert_type.value,
+                    alert_type=alert_type_str,
                     current_price=quote.price,
                     target_value=alert.target_value,
                     notes=alert.notes,
@@ -329,10 +332,11 @@ class AlertService:
         except Exception:
             current_price = 0.0
 
+        alert_type_str = alert.alert_type.value if hasattr(alert.alert_type, 'value') else str(alert.alert_type)
         return await self._telegram.send_message(
             f"🧪 <b>TEST ALERTE</b>\n\n"
             f"Ticker: {alert.ticker}\n"
-            f"Type: {alert.alert_type.value}\n"
+            f"Type: {alert_type_str}\n"
             f"Cible: {alert.target_value}\n"
             f"Prix actuel: {current_price:.2f}\n\n"
             f"<i>Ceci est un test, l'alerte n'a pas été déclenchée.</i>"

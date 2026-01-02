@@ -18,7 +18,9 @@ import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
-from src.infrastructure.brokers.saxo.saxo_broker import SaxoBroker
+from src.infrastructure.brokers.saxo.saxo_auth import get_saxo_auth
+from src.infrastructure.brokers.saxo.saxo_api_client import SaxoApiClient
+from src.config.settings import get_settings
 from src.infrastructure.notifications.telegram_service import get_telegram_service
 from src.infrastructure.providers.yahoo_finance_provider import YahooFinanceProvider
 
@@ -73,24 +75,38 @@ class TechnicalAlertService:
         signals = []
 
         try:
-            broker = SaxoBroker()
+            # Utiliser le systeme d'auth Saxo existant
+            auth = get_saxo_auth()
+            token = auth.get_current_token()
 
             # Verifier si authentifie
-            if not await broker.is_authenticated():
+            if not token:
                 logger.debug("Technical alerts: not authenticated, skipping")
                 return signals
 
-            # Recuperer le portefeuille
-            portfolio = await broker.get_portfolio()
+            # Creer le client API
+            settings = get_settings()
+            client = SaxoApiClient(settings)
 
-            if not portfolio or "positions" not in portfolio:
+            # Recuperer le client key
+            client_info = client.get_client_info(token.access_token)
+            client_key = client_info.get("ClientKey")
+
+            if not client_key:
+                logger.debug("Technical alerts: no client key")
+                return signals
+
+            # Recuperer les positions
+            positions = client.get_positions(token.access_token, client_key)
+
+            if not positions:
                 logger.debug("Technical alerts: no positions")
                 return signals
 
             # Analyser chaque position
-            for position in portfolio.get("positions", []):
-                position_view = position.get("PositionView", {})
-                ticker = position_view.get("Symbol")
+            for position in positions:
+                display = position.get("DisplayAndFormat", {})
+                ticker = display.get("Symbol")
 
                 if not ticker:
                     continue

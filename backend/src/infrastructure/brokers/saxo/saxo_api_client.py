@@ -512,6 +512,12 @@ class SaxoApiClient:
                 f"Trop de requêtes. Réessayez dans {retry_after} secondes."
             )
 
+        # Conflit (ex: ordre invalide, paramètres manquants)
+        if status == 409:
+            error_msg = self._parse_error(response)
+            logger.error(f"Conflict error on {endpoint}: {error_msg}")
+            raise BrokerApiError("saxo", f"Ordre rejeté: {error_msg}")
+
         # Autres erreurs
         error_msg = self._parse_error(response)
         logger.error(f"API error on {endpoint}: {status} - {error_msg}")

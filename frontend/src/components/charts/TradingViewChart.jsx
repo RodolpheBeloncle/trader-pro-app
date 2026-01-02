@@ -76,17 +76,29 @@ export default function TradingViewChart({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [data, setData] = useState(null)
+  const abortControllerRef = useRef(null)
 
   // Fetch OHLC data from API
-  const fetchOHLCData = useCallback(async () => {
-    if (!ticker) return
+  const fetchOHLCData = useCallback(async (tickerToFetch) => {
+    if (!tickerToFetch) return
+
+    // Annuler la requête précédente si elle existe
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+
+    const abortController = new AbortController()
+    abortControllerRef.current = abortController
 
     setLoading(true)
     setError(null)
+    setData(null) // Reset data pour éviter d'afficher les anciennes données
 
     try {
       // Use relative URL to leverage Vite proxy
-      const response = await fetch(`/api/stocks/ohlc/${ticker}?days=365`)
+      const response = await fetch(`/api/stocks/ohlc/${tickerToFetch}?days=365`, {
+        signal: abortController.signal
+      })
 
       if (!response.ok) {
         throw new Error(`Failed to fetch data: ${response.statusText}`)
@@ -95,14 +107,18 @@ export default function TradingViewChart({
       const result = await response.json()
       setData(result)
     } catch (err) {
+      // Ignorer les erreurs d'annulation
+      if (err.name === 'AbortError') {
+        return
+      }
       console.error('Error fetching OHLC data:', err)
       setError(err.message)
     } finally {
       setLoading(false)
     }
-  }, [ticker])
+  }, [])
 
-  // Initialize chart
+  // Initialize chart (only once, not when ticker changes)
   useEffect(() => {
     if (!chartContainerRef.current) return
 
@@ -161,28 +177,32 @@ export default function TradingViewChart({
         chartRef.current = null
       }
     }
-  }, [height, showVolume, ticker])
+  }, [height, showVolume]) // Retirer ticker des dépendances - le chart n'a pas besoin d'être recréé
 
   // Fetch data when ticker changes
   useEffect(() => {
-    fetchOHLCData()
-  }, [fetchOHLCData])
+    if (ticker) {
+      fetchOHLCData(ticker)
+    }
+  }, [ticker, fetchOHLCData])
 
-  // Update chart data
+  // Update chart data when data changes
   useEffect(() => {
     if (!data || !candlestickSeriesRef.current || !chartRef.current) return
 
     try {
       // Set candlestick data
-      candlestickSeriesRef.current.setData(data.candles || [])
+      if (data.candles && data.candles.length > 0) {
+        candlestickSeriesRef.current.setData(data.candles)
 
-      // Set volume data if enabled
-      if (showVolume && volumeSeriesRef.current && data.volume) {
-        volumeSeriesRef.current.setData(data.volume)
+        // Set volume data if enabled
+        if (showVolume && volumeSeriesRef.current && data.volume && data.volume.length > 0) {
+          volumeSeriesRef.current.setData(data.volume)
+        }
+
+        // Fit content after data is set
+        chartRef.current.timeScale().fitContent()
       }
-
-      // Fit content
-      chartRef.current.timeScale().fitContent()
     } catch (err) {
       console.error('Error updating chart:', err)
     }

@@ -1303,6 +1303,14 @@ async def run_server():
     """
     logger.info("Starting Stock Analyzer MCP Server...")
 
+    # Initialiser la base de données avant de démarrer le serveur
+    try:
+        from src.infrastructure.database.connection import init_database
+        await init_database()
+        logger.info("Database initialized for MCP server")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+
     server = create_mcp_server()
 
     async with stdio_server() as (read_stream, write_stream):

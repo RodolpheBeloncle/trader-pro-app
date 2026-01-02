@@ -3,6 +3,7 @@ Routes API pour l'analyse des stocks.
 
 Endpoints:
 - GET /api/stocks/analyze?ticker=AAPL - Analyse un stock
+- GET /api/stocks/search?query=... - Recherche par nom ou symbole
 - POST /api/stocks/analyze/batch - Analyse plusieurs stocks
 - GET /api/stocks/export - Exporte les analyses en CSV
 
@@ -13,6 +14,9 @@ ARCHITECTURE:
 """
 
 import csv
+import logging
+
+logger = logging.getLogger(__name__)
 from io import StringIO
 from typing import List, Optional
 
@@ -226,6 +230,116 @@ async def analyze_stock(
         ],
         analyzed_at=analysis.analyzed_at.isoformat() if hasattr(analysis.analyzed_at, 'isoformat') else str(analysis.analyzed_at),
     )
+
+
+# =============================================================================
+# RECHERCHE
+# =============================================================================
+
+class SearchResultItem(BaseModel):
+    """Un résultat de recherche."""
+    symbol: str
+    name: str
+    exchange: Optional[str] = None
+    asset_type: Optional[str] = None
+
+
+class SearchResponse(BaseModel):
+    """Réponse de recherche."""
+    query: str
+    results: List[SearchResultItem]
+    count: int
+
+
+@router.get("/search", response_model=SearchResponse)
+async def search_tickers(
+    query: str = Query(
+        ...,
+        min_length=2,
+        max_length=50,
+        description="Terme de recherche (nom ou symbole)",
+    ),
+    asset_type: str = Query(
+        "all",
+        description="Type d'actif: stocks, etfs, crypto, all",
+    ),
+):
+    """
+    Recherche des tickers par nom ou symbole.
+
+    Utilise Yahoo Finance pour trouver des correspondances.
+    """
+    import yfinance as yf
+
+    try:
+        # Yahoo Finance search via Ticker lookup
+        results = []
+
+        # Essayer d'abord comme un symbole direct
+        try:
+            ticker = yf.Ticker(query.upper())
+            info = ticker.info
+            if info and info.get('shortName'):
+                results.append(SearchResultItem(
+                    symbol=query.upper(),
+                    name=info.get('shortName', query.upper()),
+                    exchange=info.get('exchange'),
+                    asset_type=info.get('quoteType', 'EQUITY'),
+                ))
+        except Exception:
+            pass
+
+        # Si pas de résultat direct, essayer avec des variations courantes pour ETFs
+        if not results and len(query) > 3:
+            # Essayer quelques variantes pour les ETFs populaires
+            common_etf_tickers = {
+                "ishares msci world": ["IWDA.AS", "URTH", "SWDA.L"],
+                "ishares": ["IWDA.AS", "IVV", "AGG", "EEM"],
+                "vanguard": ["VTI", "VOO", "VEA", "VWO"],
+                "spdr": ["SPY", "GLD", "XLF"],
+                "msci world": ["IWDA.AS", "URTH", "ACWI"],
+                "s&p 500": ["SPY", "VOO", "IVV"],
+                "nasdaq": ["QQQ", "TQQQ"],
+            }
+
+            query_lower = query.lower()
+            for key, tickers in common_etf_tickers.items():
+                if key in query_lower:
+                    for t in tickers[:3]:  # Max 3 par catégorie
+                        try:
+                            ticker = yf.Ticker(t)
+                            info = ticker.info
+                            if info and info.get('shortName'):
+                                results.append(SearchResultItem(
+                                    symbol=t,
+                                    name=info.get('shortName', t),
+                                    exchange=info.get('exchange'),
+                                    asset_type=info.get('quoteType', 'ETF'),
+                                ))
+                        except Exception:
+                            pass
+                    break
+
+        # Filtrer par type d'actif si demandé
+        if asset_type != "all" and results:
+            type_mapping = {
+                "stocks": ["EQUITY"],
+                "etfs": ["ETF"],
+                "crypto": ["CRYPTOCURRENCY"],
+            }
+            allowed_types = type_mapping.get(asset_type, [])
+            if allowed_types:
+                results = [r for r in results if r.asset_type in allowed_types]
+
+        return SearchResponse(
+            query=query,
+            results=results[:10],  # Max 10 résultats
+            count=len(results[:10]),
+        )
+
+    except Exception as e:
+        logger.error(f"Search error for '{query}': {e}")
+        return SearchResponse(query=query, results=[], count=0)
 
 
 @router.post(

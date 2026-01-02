@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from src.config.settings import get_settings
 from src.infrastructure.brokers.saxo.saxo_auth import get_saxo_auth, SaxoToken
 from src.infrastructure.brokers.saxo.saxo_api_client import SaxoApiClient
+from src.domain.exceptions import BrokerApiError
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,9 @@ class PortfolioSummary(BaseModel):
     total_value: float
     total_pnl: float
     total_pnl_percent: float
+    cash_available: Optional[float] = None
+    total_account_value: Optional[float] = None
+    currency: str = "EUR"
 
 
 class PortfolioResponse(BaseModel):
@@ -270,6 +274,18 @@ async def get_portfolio():
         # Comptes
         accounts = client.get_accounts(token.access_token, client_key)
         account_key = accounts[0].get("AccountKey") if accounts else None
+        account_currency = accounts[0].get("Currency", "EUR") if accounts else "EUR"
+
+        # Soldes du compte
+        cash_available = None
+        total_account_value = None
+        try:
+            balances = client.get_balances(token.access_token, client_key)
+            cash_available = balances.get("CashAvailableForTrading", 0)
+            total_account_value = balances.get("TotalValue", 0)
+            logger.info(f"Balances: cash={cash_available}, total={total_account_value}")
+        except Exception as e:
+            logger.warning(f"Could not fetch balances: {e}")
 
         # Positions - utilise /positions/me avec PositionBase, PositionView, DisplayAndFormat
         positions_data = client.get_positions(token.access_token, client_key)
@@ -339,7 +355,10 @@ async def get_portfolio():
                 total_positions=len(positions),
                 total_value=round(total_value, 2),
                 total_pnl=round(total_pnl, 2),
-                total_pnl_percent=round(total_pnl_percent, 2)
+                total_pnl_percent=round(total_pnl_percent, 2),
+                cash_available=round(cash_available, 2) if cash_available else None,
+                total_account_value=round(total_account_value, 2) if total_account_value else None,
+                currency=account_currency
             ),
             account_key=account_key
         )
@@ -568,9 +587,12 @@ async def place_order(order: OrderRequest):
             message="Ordre place avec succes"
         )
 
+    except BrokerApiError as e:
+        logger.error(f"Broker error placing order: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("Error placing order")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Erreur serveur: {str(e)}")
 
 
 @router.delete("/orders/{order_id}")

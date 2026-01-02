@@ -1,5 +1,21 @@
 const API_BASE = '/api';
 
+// Helper to extract error message from FastAPI response
+function extractErrorMessage(error, fallback) {
+  if (!error) return fallback;
+  if (typeof error === 'string') return error;
+  if (error.detail) {
+    if (typeof error.detail === 'string') return error.detail;
+    if (Array.isArray(error.detail)) {
+      return error.detail.map(e => e.msg || e.message || JSON.stringify(e)).join(', ');
+    }
+    if (typeof error.detail === 'object') return error.detail.message || JSON.stringify(error.detail);
+  }
+  if (error.error) return error.error;
+  if (error.message) return error.message;
+  return fallback;
+}
+
 export async function analyzeTicker(ticker) {
   try {
     // Backend uses GET with query parameter
@@ -8,7 +24,7 @@ export async function analyzeTicker(ticker) {
     if (!response.ok) {
       // Try to get error details from response
       const errorData = await response.json().catch(() => ({}));
-      const errorMessage = errorData.detail || errorData.error || `HTTP ${response.status}`;
+      const errorMessage = extractErrorMessage(errorData, `HTTP ${response.status}`);
       throw new Error(`Failed to analyze ${ticker}: ${errorMessage}`);
     }
 
@@ -19,6 +35,20 @@ export async function analyzeTicker(ticker) {
       throw new Error(`Cannot connect to server. Make sure the backend is running on port 8000.`);
     }
     throw error;
+  }
+}
+
+// Recherche de tickers par nom ou symbole
+export async function searchTickers(query, assetType = 'stocks') {
+  try {
+    const response = await fetch(`${API_BASE}/stocks/search?query=${encodeURIComponent(query)}&asset_type=${assetType}`);
+    if (!response.ok) {
+      return { results: [] };
+    }
+    return response.json();
+  } catch (error) {
+    console.error('Search error:', error);
+    return { results: [] };
   }
 }
 
@@ -133,16 +163,6 @@ export async function setupTelegramInitial(botToken, chatId) {
     throw new Error(error.detail || 'Failed to setup Telegram');
   }
   return response.json();
-}
-
-// Helper to extract error message from FastAPI response
-function extractErrorMessage(error, fallback) {
-  if (!error.detail) return fallback;
-  if (typeof error.detail === 'string') return error.detail;
-  if (Array.isArray(error.detail)) {
-    return error.detail.map(e => e.msg || e.message || JSON.stringify(e)).join(', ');
-  }
-  return JSON.stringify(error.detail);
 }
 
 export async function setupSaxoInitial(appKey, appSecret, environment = 'SIM', redirectUri = 'http://localhost:5173') {

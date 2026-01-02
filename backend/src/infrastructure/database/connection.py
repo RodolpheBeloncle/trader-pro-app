@@ -75,6 +75,8 @@ class DatabaseConnection:
             await self._connection.execute("PRAGMA foreign_keys = ON")
             # Mode WAL pour de meilleures performances concurrentes
             await self._connection.execute("PRAGMA journal_mode = WAL")
+            # Timeout pour éviter les erreurs "database is locked" (5 secondes)
+            await self._connection.execute("PRAGMA busy_timeout = 5000")
             # Row factory pour accès par nom de colonne
             self._connection.row_factory = aiosqlite.Row
 

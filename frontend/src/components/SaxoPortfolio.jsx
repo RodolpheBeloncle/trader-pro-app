@@ -15,7 +15,7 @@ const TABS = [
   { id: 'history', label: 'Historique', icon: History }
 ]
 
-export default function SaxoPortfolio() {
+export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResultHandled }) {
   // Connection state
   const [status, setStatus] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -26,10 +26,10 @@ export default function SaxoPortfolio() {
   const [portfolio, setPortfolio] = useState(null)
   const [orders, setOrders] = useState([])
   const [history, setHistory] = useState([])
-  const [activeTab, setActiveTab] = useState('portfolio')
+  const [activeTab, setActiveTab] = useState(initialTicker ? 'trade' : 'portfolio')
 
   // Trading state
-  const [searchQuery, setSearchQuery] = useState('')
+  const [searchQuery, setSearchQuery] = useState(initialTicker || '')
   const [searchResults, setSearchResults] = useState([])
   const [selectedInstrument, setSelectedInstrument] = useState(null)
   const [orderForm, setOrderForm] = useState({
@@ -38,22 +38,44 @@ export default function SaxoPortfolio() {
     buySell: 'Buy',
     price: ''
   })
+  const [initialTickerProcessed, setInitialTickerProcessed] = useState(false)
 
   // Alert modal state
   const [alertModal, setAlertModal] = useState({ show: false, position: null })
   const [alertForm, setAlertForm] = useState({ stopLoss: 8, takeProfit: 24 })
 
-  // Check status on mount and handle OAuth callback
+  // Check status on mount
+  // Note: OAuth callback is handled by App.jsx and passed via oauthResult prop
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const code = params.get('code')
-
-    if (code) {
-      handleOAuthCallback(code)
-    } else {
-      checkStatus()
-    }
+    // Ne pas traiter le callback ici - c'est fait par App.jsx
+    // Juste vérifier le statut
+    checkStatus()
   }, [])
+
+  // Handle OAuth result from parent
+  useEffect(() => {
+    if (oauthResult) {
+      if (oauthResult.success) {
+        setSuccess('Connexion reussie!')
+        setTimeout(() => setSuccess(null), 3000)
+        checkStatus()
+      } else if (oauthResult.error) {
+        setError(oauthResult.error)
+      }
+      onOauthResultHandled?.()
+    }
+  }, [oauthResult])
+
+  // Auto-search when initialTicker is provided and connected
+  useEffect(() => {
+    if (initialTicker && status?.connected && !initialTickerProcessed) {
+      setInitialTickerProcessed(true)
+      setActiveTab('trade')
+      setSearchQuery(initialTicker)
+      // Auto-trigger search
+      searchInstrumentsWithQuery(initialTicker)
+    }
+  }, [initialTicker, status?.connected, initialTickerProcessed])
 
   // Load portfolio when connected
   useEffect(() => {
@@ -75,33 +97,6 @@ export default function SaxoPortfolio() {
       setError(null)
     } catch (err) {
       setError('Erreur de connexion au serveur')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleOAuthCallback = async (code) => {
-    try {
-      setLoading(true)
-      setError(null)
-
-      const res = await fetch(`${API_BASE}/saxo/auth/callback?code=${encodeURIComponent(code)}`)
-      const data = await res.json()
-
-      // Clean URL
-      window.history.replaceState({}, '', window.location.pathname)
-
-      if (res.ok && data.success) {
-        setSuccess('Connexion reussie!')
-        setTimeout(() => setSuccess(null), 3000)
-        await checkStatus()
-      } else {
-        setError(data.detail || 'Echec de connexion')
-        setStatus({ configured: true, connected: false })
-      }
-    } catch (err) {
-      setError('Erreur lors de la connexion')
-      window.history.replaceState({}, '', window.location.pathname)
     } finally {
       setLoading(false)
     }
@@ -212,18 +207,37 @@ export default function SaxoPortfolio() {
 
   const searchInstruments = async () => {
     if (!searchQuery.trim()) return
+    await searchInstrumentsWithQuery(searchQuery)
+  }
+
+  const searchInstrumentsWithQuery = async (query) => {
+    if (!query?.trim()) return
 
     try {
       setLoading(true)
       const res = await fetch(
-        `${API_BASE}/saxo/search?query=${encodeURIComponent(searchQuery)}&asset_types=Stock,Etf`
+        `${API_BASE}/saxo/search?query=${encodeURIComponent(query)}&asset_types=Stock,Etf`
       )
       if (res.status === 401) {
         setStatus({ ...status, connected: false })
         return
       }
       const data = await res.json()
-      setSearchResults(data.results || [])
+      const results = data.results || []
+      setSearchResults(results)
+
+      // Si c'est une recherche automatique avec initialTicker et qu'on a un résultat exact, le sélectionner
+      if (initialTicker && results.length > 0) {
+        // Chercher un match exact sur le symbole
+        const exactMatch = results.find(
+          r => r.symbol?.toUpperCase() === query.toUpperCase()
+        )
+        if (exactMatch) {
+          setSelectedInstrument(exactMatch)
+          setSearchResults([])
+          setSearchQuery('')
+        }
+      }
     } catch (err) {
       setError('Erreur recherche')
     } finally {
@@ -548,6 +562,38 @@ export default function SaxoPortfolio() {
       {/* Portfolio Tab */}
       {activeTab === 'portfolio' && portfolio && (
         <div className="space-y-6">
+          {/* Account Balance Banner */}
+          {(portfolio.summary.cash_available != null || portfolio.summary.total_account_value != null) && (
+            <div className="bg-gradient-to-r from-blue-900/40 to-purple-900/40 border border-blue-700/50 rounded-xl p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-6">
+                  {portfolio.summary.cash_available != null && (
+                    <div>
+                      <p className="text-xs text-blue-300 uppercase tracking-wide">Cash disponible</p>
+                      <p className="text-xl font-bold text-white">
+                        {portfolio.summary.cash_available.toLocaleString('fr-FR', {
+                          style: 'currency',
+                          currency: portfolio.summary.currency || 'EUR'
+                        })}
+                      </p>
+                    </div>
+                  )}
+                  {portfolio.summary.total_account_value != null && (
+                    <div className="border-l border-blue-700/50 pl-6">
+                      <p className="text-xs text-purple-300 uppercase tracking-wide">Valeur compte total</p>
+                      <p className="text-xl font-bold text-white">
+                        {portfolio.summary.total_account_value.toLocaleString('fr-FR', {
+                          style: 'currency',
+                          currency: portfolio.summary.currency || 'EUR'
+                        })}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Summary */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
@@ -555,11 +601,11 @@ export default function SaxoPortfolio() {
               <p className="text-2xl font-bold">{portfolio.summary.total_positions}</p>
             </div>
             <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
-              <p className="text-sm text-slate-400">Valeur totale</p>
+              <p className="text-sm text-slate-400">Valeur positions</p>
               <p className="text-2xl font-bold">
                 {portfolio.summary.total_value.toLocaleString('fr-FR', {
                   style: 'currency',
-                  currency: 'EUR'
+                  currency: portfolio.summary.currency || 'EUR'
                 })}
               </p>
             </div>
@@ -571,7 +617,7 @@ export default function SaxoPortfolio() {
                 {portfolio.summary.total_pnl >= 0 ? '+' : ''}
                 {portfolio.summary.total_pnl.toLocaleString('fr-FR', {
                   style: 'currency',
-                  currency: 'EUR'
+                  currency: portfolio.summary.currency || 'EUR'
                 })}
               </p>
             </div>

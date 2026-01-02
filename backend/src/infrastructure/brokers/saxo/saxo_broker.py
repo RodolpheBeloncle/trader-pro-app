@@ -77,19 +77,20 @@ class SaxoBroker(BrokerService):
 
     def __init__(
         self,
-        settings: Settings,
+        settings: Optional[Settings] = None,
         token_store: Optional[TokenRepository] = None,
     ):
         """
         Initialise le broker Saxo.
 
         Args:
-            settings: Configuration de l'application
+            settings: Configuration de l'application (par défaut: get_settings())
             token_store: Repository pour le stockage des tokens
         """
-        self.settings = settings
-        self.oauth = SaxoAuthService(settings)
-        self.api_client = SaxoApiClient(settings)
+        from src.config.settings import get_settings
+        self.settings = settings or get_settings()
+        self.oauth = SaxoAuthService(self.settings)
+        self.api_client = SaxoApiClient(self.settings)
         self.token_store = token_store
 
         self._client_key_cache: Dict[str, str] = {}
@@ -130,6 +131,35 @@ class SaxoBroker(BrokerService):
         auth_url = self.oauth.get_auth_url()
         return {"auth_url": auth_url}
 
+    async def handle_auth_callback(
+        self,
+        code: str,
+        state: str = None,
+    ) -> BrokerCredentials:
+        """
+        Gère le callback OAuth2 et échange le code contre des tokens.
+
+        Args:
+            code: Code d'autorisation reçu
+            state: État à valider (non utilisé)
+
+        Returns:
+            BrokerCredentials avec les tokens
+
+        Raises:
+            BrokerAuthenticationError: Si l'authentification échoue
+        """
+        # Échanger le code contre des tokens
+        token = self.oauth.exchange_code(code)
+
+        logger.info(f"Authenticated with Saxo ({self.settings.SAXO_ENVIRONMENT})")
+
+        return BrokerCredentials(
+            access_token=token.access_token,
+            refresh_token=token.refresh_token,
+            expires_at=token.expires_at,
+        )
+
     async def handle_oauth_callback(
         self,
         user_id: str,
@@ -137,29 +167,38 @@ class SaxoBroker(BrokerService):
         state: str = None,
     ) -> BrokerCredentials:
         """
-        Traite le callback OAuth et stocke les tokens.
+        Alias pour handle_auth_callback pour compatibilité.
+        """
+        return await self.handle_auth_callback(authorization_code, state)
+
+    async def refresh_token(
+        self,
+        refresh_token: str,
+    ) -> BrokerCredentials:
+        """
+        Rafraîchit l'access token.
 
         Args:
-            user_id: ID de l'utilisateur
-            authorization_code: Code d'autorisation
-            state: État pour validation (non utilisé)
+            refresh_token: Token de rafraîchissement
 
         Returns:
-            BrokerCredentials avec access_token
+            Nouveaux credentials
 
         Raises:
-            BrokerAuthenticationError: Si l'authentification échoue
+            TokenExpiredError: Si le refresh échoue
         """
-        # Échanger le code contre des tokens (le nouveau service gère le stockage)
-        token = self.oauth.exchange_code(authorization_code)
+        if not refresh_token:
+            raise TokenExpiredError(
+                self.BROKER_NAME,
+                "Pas de refresh token disponible"
+            )
 
-        logger.info(f"User {user_id} authenticated with Saxo ({self.settings.SAXO_ENVIRONMENT})")
+        token = self.oauth.refresh_token(refresh_token)
 
         return BrokerCredentials(
             access_token=token.access_token,
             refresh_token=token.refresh_token,
             expires_at=token.expires_at,
-            broker=self.BROKER_NAME,
         )
 
     async def refresh_credentials(
@@ -168,30 +207,9 @@ class SaxoBroker(BrokerService):
     ) -> BrokerCredentials:
         """
         Rafraîchit les credentials expirés.
-
-        Args:
-            credentials: Credentials actuels
-
-        Returns:
-            Nouveaux credentials
-
-        Raises:
-            TokenExpiredError: Si le refresh échoue
+        Alias pour refresh_token avec BrokerCredentials.
         """
-        if not credentials.refresh_token:
-            raise TokenExpiredError(
-                self.BROKER_NAME,
-                "Pas de refresh token disponible"
-            )
-
-        token = self.oauth.refresh_token(credentials.refresh_token)
-
-        return BrokerCredentials(
-            access_token=token.access_token,
-            refresh_token=token.refresh_token,
-            expires_at=token.expires_at,
-            broker=self.BROKER_NAME,
-        )
+        return await self.refresh_token(credentials.refresh_token)
 
     async def validate_credentials(
         self,
@@ -434,14 +452,14 @@ class SaxoBroker(BrokerService):
     # INSTRUMENTS
     # =========================================================================
 
-    async def search_instruments(
+    async def search_instrument(
         self,
         credentials: BrokerCredentials,
         query: str,
         asset_types: Optional[List[str]] = None,
     ) -> List[Instrument]:
         """
-        Recherche des instruments.
+        Recherche un instrument par nom ou symbole.
 
         Args:
             credentials: Credentials d'authentification
@@ -457,7 +475,8 @@ class SaxoBroker(BrokerService):
         saxo_types = None
         if asset_types:
             saxo_types = [
-                self._map_asset_type_to_saxo(at) for at in asset_types
+                self._map_asset_type_to_saxo(str(at.value) if hasattr(at, 'value') else str(at))
+                for at in asset_types
             ]
 
         saxo_instruments = self.api_client.search_instruments(
@@ -470,6 +489,15 @@ class SaxoBroker(BrokerService):
             Instrument(**mappers.map_instrument(inst))
             for inst in saxo_instruments
         ]
+
+    async def search_instruments(
+        self,
+        credentials: BrokerCredentials,
+        query: str,
+        asset_types: Optional[List[str]] = None,
+    ) -> List[Instrument]:
+        """Alias pour search_instrument."""
+        return await self.search_instrument(credentials, query, asset_types)
 
     # =========================================================================
     # PRIVATE METHODS
