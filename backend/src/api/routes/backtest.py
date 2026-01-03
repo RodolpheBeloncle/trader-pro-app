@@ -80,6 +80,93 @@ class BacktestResponse(BaseModel):
 # ROUTES
 # =============================================================================
 
+@router.get("/simple/{ticker}")
+async def simple_backtest(
+    ticker: str,
+    years: int = Query(3, ge=1, le=10, description="Nombre d'annees"),
+):
+    """
+    Backtest simplifie buy-and-hold pour un ticker.
+
+    Calcule les metriques de base sans configuration complexe.
+    Ideal pour une vue rapide des performances historiques.
+    """
+    import yfinance as yf
+    import numpy as np
+    from datetime import datetime, timedelta
+
+    try:
+        symbol = ticker.upper()
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=years * 365)
+
+        stock = yf.Ticker(symbol)
+        hist = stock.history(start=start_date.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"))
+
+        if hist.empty or len(hist) < 50:
+            return {
+                "period": f"{years} ans",
+                "message": f"Donnees insuffisantes pour {symbol}",
+                "cagr": None,
+                "volatility": None,
+                "sharpe_ratio": None,
+                "max_drawdown": None,
+                "total_return": None
+            }
+
+        close = hist['Close']
+
+        # Total return
+        total_return = ((close.iloc[-1] / close.iloc[0]) - 1) * 100
+
+        # CAGR
+        actual_years = len(hist) / 252  # Trading days per year
+        if actual_years > 0 and close.iloc[0] > 0:
+            cagr = ((close.iloc[-1] / close.iloc[0]) ** (1 / actual_years) - 1) * 100
+        else:
+            cagr = 0
+
+        # Volatility (annualized)
+        returns = close.pct_change().dropna()
+        volatility = returns.std() * np.sqrt(252) * 100
+
+        # Sharpe Ratio (assuming 4% risk-free rate)
+        excess_return = cagr - 4
+        sharpe_ratio = excess_return / volatility if volatility > 0 else 0
+
+        # Max Drawdown
+        rolling_max = close.expanding().max()
+        drawdown = (close - rolling_max) / rolling_max
+        max_drawdown = drawdown.min() * 100
+
+        return {
+            "ticker": symbol,
+            "period": f"{years} ans",
+            "actual_days": len(hist),
+            "start_date": hist.index[0].strftime("%Y-%m-%d"),
+            "end_date": hist.index[-1].strftime("%Y-%m-%d"),
+            "start_price": round(float(close.iloc[0]), 2),
+            "end_price": round(float(close.iloc[-1]), 2),
+            "cagr": round(cagr, 2),
+            "volatility": round(volatility, 2),
+            "sharpe_ratio": round(sharpe_ratio, 2),
+            "max_drawdown": round(max_drawdown, 2),
+            "total_return": round(total_return, 2)
+        }
+
+    except Exception as e:
+        logger.exception(f"Simple backtest error for {ticker}: {e}")
+        return {
+            "period": f"{years} ans",
+            "message": f"Erreur: {str(e)}",
+            "cagr": None,
+            "volatility": None,
+            "sharpe_ratio": None,
+            "max_drawdown": None,
+            "total_return": None
+        }
+
+
 @router.post("/run", response_model=BacktestResponse)
 async def run_backtest(request: BacktestRequest):
     """

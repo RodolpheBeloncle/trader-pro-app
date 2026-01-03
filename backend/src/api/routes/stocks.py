@@ -508,6 +508,272 @@ async def get_ohlc_use_case() -> GetOHLCDataUseCase:
     return GetOHLCDataUseCase(provider)
 
 
+# =============================================================================
+# TECHNICAL ANALYSIS
+# =============================================================================
+
+class TechnicalAnalysisResponse(BaseModel):
+    """Reponse analyse technique."""
+    ticker: str
+    trend: str  # bullish, bearish, neutral
+    rsi: float
+    macd: dict
+    moving_averages: dict
+    support_resistance: dict
+    volume_trend: str
+
+
+@router.get(
+    "/technical/{ticker}",
+    response_model=TechnicalAnalysisResponse,
+)
+async def get_technical_analysis(ticker: str):
+    """
+    Retourne l'analyse technique d'un ticker.
+
+    Indicateurs:
+    - RSI (14 periodes)
+    - MACD (12, 26, 9)
+    - Moyennes mobiles (SMA 20, 50, 200)
+    - Support/Resistance
+    """
+    import yfinance as yf
+    import numpy as np
+
+    try:
+        symbol = ticker.upper()
+        stock = yf.Ticker(symbol)
+        hist = stock.history(period="6mo")
+
+        if hist.empty:
+            raise HTTPException(status_code=404, detail=f"Ticker {symbol} non trouve")
+
+        close = hist['Close']
+
+        # RSI (14)
+        delta = close.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        rsi = (100 - (100 / (1 + rs))).iloc[-1]
+
+        # MACD
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        histogram = macd_line - signal_line
+
+        # Moyennes mobiles
+        sma_20 = close.rolling(window=20).mean().iloc[-1] if len(close) >= 20 else None
+        sma_50 = close.rolling(window=50).mean().iloc[-1] if len(close) >= 50 else None
+        sma_200 = close.rolling(window=200).mean().iloc[-1] if len(close) >= 200 else close.mean()
+
+        current_price = close.iloc[-1]
+
+        # Tendance
+        if current_price > (sma_50 or current_price) and rsi > 50:
+            trend = "bullish"
+        elif current_price < (sma_50 or current_price) and rsi < 50:
+            trend = "bearish"
+        else:
+            trend = "neutral"
+
+        # Support/Resistance simples (min/max recents)
+        recent = close.tail(30)
+        support = float(recent.min())
+        resistance = float(recent.max())
+
+        # Volume trend
+        vol = hist['Volume'].tail(10)
+        vol_avg = hist['Volume'].tail(50).mean()
+        if vol.mean() > vol_avg * 1.3:
+            volume_trend = "high"
+        elif vol.mean() < vol_avg * 0.7:
+            volume_trend = "low"
+        else:
+            volume_trend = "normal"
+
+        return TechnicalAnalysisResponse(
+            ticker=symbol,
+            trend=trend,
+            rsi=round(float(rsi), 1) if not np.isnan(rsi) else 50,
+            macd={
+                "value": round(float(macd_line.iloc[-1]), 3),
+                "signal": round(float(signal_line.iloc[-1]), 3),
+                "histogram": round(float(histogram.iloc[-1]), 3)
+            },
+            moving_averages={
+                "sma_20": round(float(sma_20), 2) if sma_20 else None,
+                "sma_50": round(float(sma_50), 2) if sma_50 else None,
+                "sma_200": round(float(sma_200), 2) if sma_200 else None
+            },
+            support_resistance={
+                "support": round(support, 2),
+                "resistance": round(resistance, 2)
+            },
+            volume_trend=volume_trend
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Technical analysis error for {ticker}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# DECISION HELPER
+# =============================================================================
+
+class DecisionFactorResponse(BaseModel):
+    """Facteur de decision."""
+    name: str
+    score: int
+    description: Optional[str] = None
+
+
+class DecisionResponse(BaseModel):
+    """Reponse aide a la decision."""
+    ticker: str
+    decision: str  # strong_buy, buy, hold, monitor, review, sell
+    confidence: int
+    factors: List[DecisionFactorResponse]
+    summary: str
+
+
+@router.get(
+    "/decision/{ticker}",
+    response_model=DecisionResponse,
+)
+async def get_decision_help(ticker: str):
+    """
+    Fournit une aide a la decision pour un ticker.
+
+    Analyse multi-facteurs:
+    - Tendance technique
+    - Momentum (RSI, MACD)
+    - Volatilite
+    - Performance recente
+    """
+    import yfinance as yf
+    import numpy as np
+
+    try:
+        symbol = ticker.upper()
+        stock = yf.Ticker(symbol)
+        hist = stock.history(period="1y")
+
+        if hist.empty:
+            raise HTTPException(status_code=404, detail=f"Ticker {symbol} non trouve")
+
+        close = hist['Close']
+        current_price = close.iloc[-1]
+
+        # Calculs
+        perf_1m = ((close.iloc[-1] / close.iloc[-22]) - 1) * 100 if len(close) > 22 else 0
+        perf_3m = ((close.iloc[-1] / close.iloc[-66]) - 1) * 100 if len(close) > 66 else 0
+
+        # RSI
+        delta = close.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        rsi = float((100 - (100 / (1 + rs))).iloc[-1])
+        if np.isnan(rsi):
+            rsi = 50
+
+        # Volatilite
+        returns = close.pct_change().dropna()
+        volatility = returns.std() * np.sqrt(252) * 100
+
+        # SMA trend
+        sma_50 = close.rolling(window=50).mean().iloc[-1] if len(close) >= 50 else current_price
+        trend_score = 70 if current_price > sma_50 else 30
+
+        # Scoring
+        factors = []
+
+        # 1. Tendance
+        if current_price > sma_50 * 1.05:
+            factors.append(DecisionFactorResponse(name="Tendance", score=80, description="Au-dessus SMA50"))
+        elif current_price > sma_50:
+            factors.append(DecisionFactorResponse(name="Tendance", score=60, description="Legerement haussier"))
+        elif current_price > sma_50 * 0.95:
+            factors.append(DecisionFactorResponse(name="Tendance", score=40, description="Legerement baissier"))
+        else:
+            factors.append(DecisionFactorResponse(name="Tendance", score=20, description="Sous SMA50"))
+
+        # 2. Momentum RSI
+        if rsi > 70:
+            factors.append(DecisionFactorResponse(name="RSI", score=30, description="Surachete"))
+        elif rsi > 50:
+            factors.append(DecisionFactorResponse(name="RSI", score=65, description="Momentum positif"))
+        elif rsi > 30:
+            factors.append(DecisionFactorResponse(name="RSI", score=45, description="Momentum faible"))
+        else:
+            factors.append(DecisionFactorResponse(name="RSI", score=70, description="Survendu - potentiel rebond"))
+
+        # 3. Performance
+        perf_score = max(20, min(80, 50 + perf_1m))
+        factors.append(DecisionFactorResponse(
+            name="Performance 1M",
+            score=int(perf_score),
+            description=f"{perf_1m:+.1f}%"
+        ))
+
+        # 4. Volatilite
+        if volatility > 40:
+            factors.append(DecisionFactorResponse(name="Volatilite", score=30, description="Tres volatile"))
+        elif volatility > 25:
+            factors.append(DecisionFactorResponse(name="Volatilite", score=50, description="Volatile"))
+        else:
+            factors.append(DecisionFactorResponse(name="Volatilite", score=70, description="Stable"))
+
+        # Score global
+        avg_score = sum(f.score for f in factors) / len(factors)
+
+        # Decision
+        if avg_score >= 70:
+            decision = "strong_buy"
+            summary = "Tous les indicateurs sont favorables. Opportunite d'achat."
+        elif avg_score >= 60:
+            decision = "buy"
+            summary = "Indicateurs majoritairement positifs. Achat envisageable."
+        elif avg_score >= 50:
+            decision = "hold"
+            summary = "Situation neutre. Maintenir la position si deja investi."
+        elif avg_score >= 40:
+            decision = "monitor"
+            summary = "Signaux mixtes. A surveiller de pres."
+        elif avg_score >= 30:
+            decision = "review"
+            summary = "Indicateurs defavorables. Reevaluer la position."
+        else:
+            decision = "sell"
+            summary = "Signaux negatifs multiples. Considerer une sortie."
+
+        confidence = min(95, max(40, int(avg_score + abs(avg_score - 50) * 0.5)))
+
+        return DecisionResponse(
+            ticker=symbol,
+            decision=decision,
+            confidence=confidence,
+            factors=factors,
+            summary=summary
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Decision analysis error for {ticker}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# OHLC DATA FOR TRADINGVIEW
+# =============================================================================
+
 @router.get(
     "/ohlc/{ticker}",
     response_model=OHLCDataResponse,

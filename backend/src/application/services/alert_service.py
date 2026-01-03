@@ -341,3 +341,32 @@ class AlertService:
             f"Prix actuel: {current_price:.2f}\n\n"
             f"<i>Ceci est un test, l'alerte n'a pas été déclenchée.</i>"
         )
+
+
+# =============================================================================
+# SINGLETON GETTER
+# =============================================================================
+
+_alert_service: Optional[AlertService] = None
+
+
+def get_alert_service() -> AlertService:
+    """
+    Retourne une instance singleton du service d'alertes.
+
+    Returns:
+        AlertService partagé
+    """
+    global _alert_service
+    if _alert_service is None:
+        # Import ici pour éviter les imports circulaires
+        from src.infrastructure.repositories.alert_repository import AlertRepository
+        from src.infrastructure.providers.yahoo_finance_provider import get_yahoo_provider
+        from src.infrastructure.notifications.telegram_notifier import TelegramNotifier
+
+        _alert_service = AlertService(
+            alert_repo=AlertRepository(),
+            price_provider=get_yahoo_provider(),
+            telegram=TelegramNotifier(),
+        )
+    return _alert_service

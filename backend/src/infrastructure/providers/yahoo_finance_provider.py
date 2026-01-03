@@ -390,3 +390,20 @@ def create_yahoo_provider(cache_ttl: int = 300) -> YahooFinanceProvider:
         Instance configurée de YahooFinanceProvider
     """
     return YahooFinanceProvider(cache_ttl=cache_ttl)
+
+
+# Singleton pour usage simple
+_yahoo_provider: Optional[YahooFinanceProvider] = None
+
+
+def get_yahoo_provider() -> YahooFinanceProvider:
+    """
+    Retourne une instance singleton du provider Yahoo Finance.
+
+    Returns:
+        YahooFinanceProvider partagé
+    """
+    global _yahoo_provider
+    if _yahoo_provider is None:
+        _yahoo_provider = create_yahoo_provider()
+    return _yahoo_provider

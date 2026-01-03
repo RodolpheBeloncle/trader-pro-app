@@ -2,8 +2,11 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   Wallet, RefreshCw, TrendingUp, TrendingDown,
   AlertCircle, ExternalLink, LogOut,
-  History, ShoppingCart, Search, X, Bell, Shield
+  History, ShoppingCart, Search, X, Bell, Shield, Lightbulb, Target
 } from 'lucide-react'
+import StopLossModal from './StopLossModal'
+import PositionDecisionPanel from './PositionDecisionPanel'
+import TickerAnalysisModal from './TickerAnalysisModal'
 
 const API_BASE = '/api'
 
@@ -40,9 +43,15 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
   })
   const [initialTickerProcessed, setInitialTickerProcessed] = useState(false)
 
-  // Alert modal state
+  // Alert modal state (legacy)
   const [alertModal, setAlertModal] = useState({ show: false, position: null })
   const [alertForm, setAlertForm] = useState({ stopLoss: 8, takeProfit: 24 })
+
+  // New modals/panels state
+  const [stopLossModal, setStopLossModal] = useState({ show: false, position: null })
+  const [decisionPanel, setDecisionPanel] = useState({ show: false, position: null })
+  const [analysisModal, setAnalysisModal] = useState({ show: false, ticker: null, position: null })
+  const [stopLossConfig, setStopLossConfig] = useState({}) // {symbol: {sl_price, tp_price, mode}}
 
   // Check status on mount
   // Note: OAuth callback is handled by App.jsx and passed via oauthResult prop
@@ -644,6 +653,7 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
                     <th className="text-right p-3 text-sm font-medium text-slate-400">Prix</th>
                     <th className="text-right p-3 text-sm font-medium text-slate-400">Valeur</th>
                     <th className="text-right p-3 text-sm font-medium text-slate-400">P&L</th>
+                    <th className="text-center p-3 text-sm font-medium text-slate-400">SL/TP</th>
                     <th className="text-center p-3 text-sm font-medium text-slate-400">Actions</th>
                   </tr>
                 </thead>
@@ -651,7 +661,13 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
                   {portfolio.positions.map((pos, idx) => (
                     <tr key={idx} className="border-t border-slate-700/50 hover:bg-slate-700/20">
                       <td className="p-3">
-                        <span className="font-semibold text-white">{pos.symbol}</span>
+                        <span
+                          className="font-semibold text-white hover:text-blue-400 cursor-pointer transition-colors"
+                          onClick={() => setAnalysisModal({ show: true, ticker: pos.symbol, position: pos })}
+                          title="Voir l'analyse complete"
+                        >
+                          {pos.symbol}
+                        </span>
                         <p className="text-xs text-slate-500 truncate max-w-[180px]">{pos.description}</p>
                       </td>
                       <td className="text-right p-3 font-mono">{pos.quantity}</td>
@@ -684,14 +700,46 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
                           {pos.pnl_percent >= 0 ? '+' : ''}{pos.pnl_percent?.toFixed(2)}%
                         </div>
                       </td>
+                      {/* SL/TP Column */}
+                      <td className="text-center p-3">
+                        {stopLossConfig[pos.symbol] ? (
+                          <div className="flex flex-col items-center text-xs">
+                            <span className="text-red-400 font-mono">
+                              SL: {stopLossConfig[pos.symbol].sl_price?.toFixed(2)}€
+                            </span>
+                            <span className="text-emerald-400 font-mono">
+                              TP: {stopLossConfig[pos.symbol].tp_price?.toFixed(2)}€
+                            </span>
+                            <span className="text-slate-500 text-[10px] mt-0.5">
+                              {stopLossConfig[pos.symbol].mode === 'order' ? '🔒 Ordre' : '🔔 Alerte'}
+                            </span>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setStopLossModal({ show: true, position: pos })}
+                            className="bg-slate-700/50 hover:bg-slate-600/50 text-slate-400 hover:text-white px-2 py-1 rounded text-xs flex items-center gap-1 mx-auto"
+                          >
+                            <Target className="w-3 h-3" />
+                            Configurer
+                          </button>
+                        )}
+                      </td>
+                      {/* Actions Column */}
                       <td className="text-center p-3">
                         <div className="flex items-center justify-center gap-1">
                           <button
-                            onClick={() => setAlertModal({ show: true, position: pos })}
-                            className="bg-yellow-600/20 hover:bg-yellow-600/40 text-yellow-400 p-1.5 rounded"
-                            title="Configurer alertes SL/TP"
+                            onClick={() => setDecisionPanel({ show: true, position: pos })}
+                            className="bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 p-1.5 rounded"
+                            title="Aide a la decision"
                           >
-                            <Bell className="w-4 h-4" />
+                            <Lightbulb className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => setStopLossModal({ show: true, position: pos })}
+                            className="bg-yellow-600/20 hover:bg-yellow-600/40 text-yellow-400 p-1.5 rounded"
+                            title="Configurer SL/TP"
+                          >
+                            <Shield className="w-4 h-4" />
                           </button>
                           <button
                             onClick={() => {
@@ -1154,6 +1202,60 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
             </div>
           </div>
         </div>
+      )}
+
+      {/* New Stop Loss Modal (dual-mode) */}
+      {stopLossModal.show && stopLossModal.position && (
+        <StopLossModal
+          position={stopLossModal.position}
+          accountKey={portfolio?.account_key}
+          onClose={() => setStopLossModal({ show: false, position: null })}
+          onSuccess={(msg) => {
+            // Update config state to show SL/TP in table
+            const pos = stopLossModal.position
+            const slPrice = pos.current_price * (1 - 0.08)
+            const tpPrice = pos.current_price * (1 + 0.24)
+            setStopLossConfig(prev => ({
+              ...prev,
+              [pos.symbol]: { sl_price: slPrice, tp_price: tpPrice, mode: 'alert' }
+            }))
+            setSuccess(msg)
+            setTimeout(() => setSuccess(null), 5000)
+          }}
+          onError={(msg) => setError(msg)}
+        />
+      )}
+
+      {/* Position Decision Panel */}
+      {decisionPanel.show && decisionPanel.position && (
+        <PositionDecisionPanel
+          position={decisionPanel.position}
+          onClose={() => setDecisionPanel({ show: false, position: null })}
+          onCreateAlert={(pos) => {
+            setDecisionPanel({ show: false, position: null })
+            setStopLossModal({ show: true, position: pos })
+          }}
+          onTrade={(pos, direction) => {
+            setDecisionPanel({ show: false, position: null })
+            setSelectedInstrument({
+              uic: pos.uic,
+              symbol: pos.symbol,
+              description: pos.description,
+              asset_type: pos.asset_type
+            })
+            setOrderForm({ ...orderForm, buySell: direction })
+            setActiveTab('trade')
+          }}
+        />
+      )}
+
+      {/* Ticker Analysis Modal */}
+      {analysisModal.show && analysisModal.ticker && (
+        <TickerAnalysisModal
+          ticker={analysisModal.ticker}
+          position={analysisModal.position}
+          onClose={() => setAnalysisModal({ show: false, ticker: null, position: null })}
+        />
       )}
     </div>
   )

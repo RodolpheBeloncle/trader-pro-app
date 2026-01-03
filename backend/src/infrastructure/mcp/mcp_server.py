@@ -101,6 +101,16 @@ from src.infrastructure.mcp.tools.monte_carlo_tool import (
     get_portfolio_analysis_tool,
     set_portfolio_alerts_tool,
 )
+from src.infrastructure.mcp.tools.income_tools import (
+    get_market_regime_tool,
+    get_income_assets_tool,
+    get_income_recommendation_tool,
+    calculate_rebalancing_tool,
+    simulate_income_portfolio_tool,
+    run_portfolio_backtest_tool,
+    create_macro_alert_tool,
+    get_dividend_calendar_tool,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1083,6 +1093,215 @@ def create_mcp_server() -> Server:
                     },
                 },
             ),
+            # ========== OUTILS INCOME PORTFOLIO (IncomeShield) ==========
+            Tool(
+                name="get_market_regime",
+                description=(
+                    "Analyse le regime de marche actuel (Risk-On/Risk-Off). "
+                    "Signaux: HYG/LQD ratio (credit), VIX (volatilite), SPY trend/drawdown, "
+                    "yield curve. Retourne le regime, les signaux actifs, et l'allocation recommandee."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            Tool(
+                name="get_income_assets",
+                description=(
+                    "Analyse les actifs a revenus par categorie. "
+                    "Categories: bdc, covered_call, cef, mreit, cash_like, dividend_growth, bonds, all. "
+                    "Retourne yield, scores, et meilleur pick par categorie."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "category": {
+                            "type": "string",
+                            "enum": ["bdc", "covered_call", "cef", "mreit", "cash_like", "dividend_growth", "bonds", "all"],
+                            "description": "Categorie d'actifs (defaut: all)",
+                            "default": "all",
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="get_income_recommendation",
+                description=(
+                    "Genere une recommandation orientee revenus pour un ticker. "
+                    "Scoring: Yield 25%, Div Growth 20%, Payout Ratio 15%, NAV Discount 15%, "
+                    "Volatilite 15%, Stabilite 10%. Retourne score global et revenu mensuel par $1000."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "ticker": {
+                            "type": "string",
+                            "description": "Symbole du ticker (ex: JEPI, ARCC, SCHD)",
+                        },
+                    },
+                    "required": ["ticker"],
+                },
+            ),
+            Tool(
+                name="calculate_rebalancing",
+                description=(
+                    "Calcule les ordres de rebalancement pour un portefeuille. "
+                    "Analyse le drift, genere les ordres buy/sell, identifie les opportunites "
+                    "de tax-loss harvesting."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "current_positions": {
+                            "type": "string",
+                            "description": 'JSON array: [{"ticker": "JEPI", "shares": 100, "value": 5000, "avg_cost": 48}]',
+                        },
+                        "target_allocation": {
+                            "type": "string",
+                            "description": 'JSON object: {"JEPI": 30, "SCHD": 30, "SGOV": 20, "ARCC": 20}',
+                        },
+                        "cash_available": {
+                            "type": "number",
+                            "description": "Cash disponible (defaut: 0)",
+                            "default": 0,
+                        },
+                        "threshold_percent": {
+                            "type": "number",
+                            "description": "Seuil de drift pour declencher le rebalancement (defaut: 5%)",
+                            "default": 5,
+                        },
+                    },
+                    "required": ["current_positions", "target_allocation"],
+                },
+            ),
+            Tool(
+                name="simulate_income_portfolio",
+                description=(
+                    "Simule l'evolution d'un portefeuille oriente revenus sur X annees. "
+                    "Projette valeur, revenus, yield on cost, impact DRIP, retrait soutenable (4% rule)."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "positions": {
+                            "type": "string",
+                            "description": 'JSON array: [{"ticker": "JEPI", "shares": 100}, {"ticker": "SCHD", "value": 5000}]',
+                        },
+                        "monthly_contribution": {
+                            "type": "number",
+                            "description": "Contribution mensuelle (defaut: 0)",
+                            "default": 0,
+                        },
+                        "years": {
+                            "type": "integer",
+                            "description": "Annees a simuler (defaut: 10)",
+                            "default": 10,
+                        },
+                        "reinvest_dividends": {
+                            "type": "boolean",
+                            "description": "Reinvestir les dividendes DRIP (defaut: true)",
+                            "default": True,
+                        },
+                    },
+                    "required": ["positions"],
+                },
+            ),
+            Tool(
+                name="run_portfolio_backtest",
+                description=(
+                    "Backtest multi-assets avec mode Risk-Off automatique (style IncomeShield). "
+                    "Periode 10 ans par defaut. Inclut rebalancement, dividendes, frais, anti-whipsaw. "
+                    "Retourne CAGR, Sharpe, Max Drawdown, temps en Risk-Off."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "allocation": {
+                            "type": "string",
+                            "description": 'JSON object: {"JEPI": 30, "SCHD": 30, "SGOV": 20, "ARCC": 20}',
+                        },
+                        "start_date": {
+                            "type": "string",
+                            "description": "Date de debut YYYY-MM-DD (defaut: 2015-01-01)",
+                            "default": "2015-01-01",
+                        },
+                        "initial_capital": {
+                            "type": "number",
+                            "description": "Capital initial (defaut: 10000)",
+                            "default": 10000,
+                        },
+                        "monthly_contribution": {
+                            "type": "number",
+                            "description": "Contribution mensuelle (defaut: 0)",
+                            "default": 0,
+                        },
+                        "risk_off_enabled": {
+                            "type": "boolean",
+                            "description": "Activer mode Risk-Off (defaut: true)",
+                            "default": True,
+                        },
+                        "risk_off_trigger": {
+                            "type": "string",
+                            "enum": ["hyg_lqd_below_sma50", "vix_above_25", "spy_below_sma200", "combined"],
+                            "description": "Trigger pour Risk-Off (defaut: combined)",
+                            "default": "combined",
+                        },
+                        "rebalance_frequency": {
+                            "type": "string",
+                            "enum": ["monthly", "quarterly", "annual"],
+                            "description": "Frequence de rebalancement (defaut: monthly)",
+                            "default": "monthly",
+                        },
+                    },
+                    "required": ["allocation"],
+                },
+            ),
+            Tool(
+                name="create_macro_alert",
+                description=(
+                    "Cree une alerte macro (VIX spike, credit stress, correction, recession). "
+                    "Envoie notification Telegram quand le signal est declenche."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "alert_type": {
+                            "type": "string",
+                            "enum": ["credit_stress", "vix_spike", "correction", "recession", "risk_off"],
+                            "description": "Type d'alerte macro",
+                        },
+                        "notify_telegram": {
+                            "type": "boolean",
+                            "description": "Envoyer notification Telegram (defaut: true)",
+                            "default": True,
+                        },
+                    },
+                    "required": ["alert_type"],
+                },
+            ),
+            Tool(
+                name="get_dividend_calendar",
+                description=(
+                    "Calendrier des dividendes a venir pour une liste de tickers. "
+                    "Retourne ex-date, pay date, montant, yield."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "tickers": {
+                            "type": "string",
+                            "description": "Liste de tickers separes par virgule (ex: JEPI,SCHD,ARCC)",
+                        },
+                        "days_ahead": {
+                            "type": "integer",
+                            "description": "Jours a regarder en avant (defaut: 30)",
+                            "default": 30,
+                        },
+                    },
+                    "required": ["tickers"],
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -1284,6 +1503,74 @@ def create_mcp_server() -> Server:
                     tickers=arguments.get("tickers"),
                     stop_loss_percent=arguments.get("stop_loss_percent", 8.0),
                     take_profit_percent=arguments.get("take_profit_percent", 24.0),
+                )
+            # ========== Outils Income Portfolio ==========
+            elif name == "get_market_regime":
+                result = await get_market_regime_tool()
+            elif name == "get_income_assets":
+                result = await get_income_assets_tool(
+                    category=arguments.get("category", "all"),
+                )
+            elif name == "get_income_recommendation":
+                result = await get_income_recommendation_tool(
+                    ticker=arguments.get("ticker", ""),
+                )
+            elif name == "calculate_rebalancing":
+                import json as json_lib
+                positions_str = arguments.get("current_positions", "[]")
+                allocation_str = arguments.get("target_allocation", "{}")
+                try:
+                    positions = json_lib.loads(positions_str) if isinstance(positions_str, str) else positions_str
+                    allocation = json_lib.loads(allocation_str) if isinstance(allocation_str, str) else allocation_str
+                except json_lib.JSONDecodeError:
+                    positions = []
+                    allocation = {}
+                result = await calculate_rebalancing_tool(
+                    current_positions=positions,
+                    target_allocation=allocation,
+                    cash_available=arguments.get("cash_available", 0),
+                    threshold_percent=arguments.get("threshold_percent", 5.0),
+                )
+            elif name == "simulate_income_portfolio":
+                import json as json_lib
+                positions_str = arguments.get("positions", "[]")
+                try:
+                    positions = json_lib.loads(positions_str) if isinstance(positions_str, str) else positions_str
+                except json_lib.JSONDecodeError:
+                    positions = []
+                result = await simulate_income_portfolio_tool(
+                    positions=positions,
+                    monthly_contribution=arguments.get("monthly_contribution", 0),
+                    years=arguments.get("years", 10),
+                    reinvest_dividends=arguments.get("reinvest_dividends", True),
+                )
+            elif name == "run_portfolio_backtest":
+                import json as json_lib
+                allocation_str = arguments.get("allocation", "{}")
+                try:
+                    allocation = json_lib.loads(allocation_str) if isinstance(allocation_str, str) else allocation_str
+                except json_lib.JSONDecodeError:
+                    allocation = {}
+                result = await run_portfolio_backtest_tool(
+                    allocation=allocation,
+                    start_date=arguments.get("start_date", "2015-01-01"),
+                    initial_capital=arguments.get("initial_capital", 10000),
+                    monthly_contribution=arguments.get("monthly_contribution", 0),
+                    risk_off_enabled=arguments.get("risk_off_enabled", True),
+                    risk_off_trigger=arguments.get("risk_off_trigger", "combined"),
+                    rebalance_frequency=arguments.get("rebalance_frequency", "monthly"),
+                )
+            elif name == "create_macro_alert":
+                result = await create_macro_alert_tool(
+                    alert_type=arguments.get("alert_type", ""),
+                    notify_telegram=arguments.get("notify_telegram", True),
+                )
+            elif name == "get_dividend_calendar":
+                tickers_str = arguments.get("tickers", "")
+                tickers = [t.strip() for t in tickers_str.split(",") if t.strip()]
+                result = await get_dividend_calendar_tool(
+                    tickers=tickers,
+                    days_ahead=arguments.get("days_ahead", 30),
                 )
             else:
                 result = f"Outil inconnu: {name}"

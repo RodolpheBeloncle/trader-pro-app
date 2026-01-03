@@ -378,30 +378,127 @@ class SaxoApiClient:
         access_token: str,
         keywords: str,
         asset_types: Optional[List[str]] = None,
+        exchange_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Recherche des instruments.
 
+        Supporte le format SYMBOL:EXCHANGE (ex: EVTG:xetr, VUSA:xmil).
+
         Args:
             access_token: Token d'accès
-            keywords: Termes de recherche
+            keywords: Termes de recherche (peut contenir :exchange)
             asset_types: Types d'actifs à chercher
+            exchange_id: ID de l'exchange (optionnel)
 
         Returns:
             Liste des instruments correspondants
         """
         if not asset_types:
-            asset_types = ["Stock", "CfdOnStock", "Etf", "CfdOnEtf"]
+            asset_types = ["Stock", "CfdOnStock", "Etf", "CfdOnEtf", "Fund", "CfdOnFund"]
+
+        # Parser le format SYMBOL:EXCHANGE
+        search_term = keywords
+        detected_exchange = exchange_id
+
+        if ":" in keywords:
+            parts = keywords.split(":")
+            search_term = parts[0].strip()
+            exchange_hint = parts[1].strip().upper() if len(parts) > 1 else None
+
+            # Mapper les suffixes courants aux ExchangeId Saxo
+            exchange_mapping = {
+                "XETR": "XETR",  # XETRA (Allemagne)
+                "XMIL": "XMIL",  # Milan (Italie)
+                "XPAR": "XPAR",  # Paris (France)
+                "XLON": "XLON",  # London
+                "XAMS": "XAMS",  # Amsterdam
+                "XBRU": "XBRU",  # Brussels
+                "XLIS": "XLIS",  # Lisbon
+                "XMAD": "XMAD",  # Madrid
+                "XSWX": "XSWX",  # Swiss
+                "XNYS": "XNYS",  # NYSE
+                "XNAS": "XNAS",  # NASDAQ
+                "ARCX": "ARCX",  # NYSE Arca
+                # Aliases courants
+                "ETR": "XETR",
+                "DE": "XETR",
+                "MIL": "XMIL",
+                "MI": "XMIL",
+                "IT": "XMIL",
+                "PA": "XPAR",
+                "FR": "XPAR",
+                "L": "XLON",
+                "LON": "XLON",
+                "AS": "XAMS",
+                "SW": "XSWX",
+                "US": "XNYS",
+            }
+
+            if exchange_hint and exchange_hint in exchange_mapping:
+                detected_exchange = exchange_mapping[exchange_hint]
+                logger.info(f"Detected exchange: {exchange_hint} -> {detected_exchange}")
+
+        # Construire les parametres
+        params = {
+            "Keywords": search_term,
+            "AssetTypes": ",".join(asset_types),
+            "IncludeNonTradable": "false",
+        }
+
+        # Ajouter l'exchange si detecte
+        if detected_exchange:
+            params["ExchangeId"] = detected_exchange
+
+        logger.info(f"Saxo search: keywords='{search_term}', exchange={detected_exchange}, types={asset_types}")
 
         response = self.get(
             access_token,
             "/ref/v1/instruments",
-            params={
-                "Keywords": keywords,
-                "AssetTypes": ",".join(asset_types),
-            },
+            params=params,
         )
-        return response.data.get("Data", [])
+
+        results = response.data.get("Data", [])
+
+        # Si pas de resultats avec l'exchange specifique, essayer sans
+        if not results and detected_exchange:
+            logger.info(f"No results with exchange {detected_exchange}, trying without...")
+            params.pop("ExchangeId", None)
+            response = self.get(
+                access_token,
+                "/ref/v1/instruments",
+                params=params,
+            )
+            results = response.data.get("Data", [])
+
+        logger.info(f"Saxo search results: {len(results)} instruments found")
+        return results
+
+    def get_instrument_details(
+        self,
+        access_token: str,
+        uic: int,
+        asset_type: str = "Stock",
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Recupere les details d'un instrument par son UIC.
+
+        Args:
+            access_token: Token d'accès
+            uic: Universal Instrument Code
+            asset_type: Type d'actif
+
+        Returns:
+            Details de l'instrument ou None
+        """
+        try:
+            response = self.get(
+                access_token,
+                f"/ref/v1/instruments/details/{uic}/{asset_type}",
+            )
+            return response.data
+        except BrokerApiError:
+            return None
 
     # =========================================================================
     # API ENDPOINTS - HISTORY
