@@ -9,8 +9,8 @@ import json
 import logging
 
 from src.config.settings import get_settings
-from src.infrastructure.persistence.token_store import get_token_store
-from src.infrastructure.brokers.saxo.saxo_broker import SaxoBroker
+from src.infrastructure.brokers.saxo.saxo_auth import get_saxo_auth
+from src.infrastructure.brokers.saxo.saxo_api_client import SaxoApiClient
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 async def get_portfolio_tool() -> str:
     """
     Recupere le portefeuille du compte Saxo connecte.
+
+    Utilise le meme systeme d'authentification que l'API web (SaxoAuth).
 
     Returns:
         String JSON avec le portefeuille ou un message d'erreur
@@ -31,52 +33,109 @@ async def get_portfolio_tool() -> str:
             "configured": False,
         }, ensure_ascii=False)
 
-    # Verifier l'authentification
-    token_store = get_token_store()
-
-    # Utiliser un user_id par defaut (session MCP)
-    user_id = "mcp_session"
-    token = await token_store.get_token(user_id, "saxo")
+    # Verifier l'authentification via SaxoAuth (meme systeme que l'API web)
+    auth = get_saxo_auth(settings)
+    token = auth.get_valid_token()
 
     if not token:
         return json.dumps({
-            "error": "Non authentifie. Connectez-vous d'abord via l'interface web.",
+            "error": "Non authentifie. Connectez-vous d'abord via l'interface web (http://localhost:5173).",
             "authenticated": False,
-        }, ensure_ascii=False)
-
-    if token.is_expired:
-        return json.dumps({
-            "error": "Token expire. Reconnectez-vous via l'interface web.",
-            "authenticated": False,
-            "expired": True,
+            "hint": "Allez sur l'interface web et cliquez sur 'Connexion Saxo'",
         }, ensure_ascii=False)
 
     try:
-        # Creer le broker et recuperer le portfolio
-        broker = SaxoBroker(settings)
+        # Creer le client API et recuperer le portfolio
+        client = SaxoApiClient(settings)
 
-        # Note: Ceci est une version simplifiee
-        # En production, utilisez le use case GetPortfolioUseCase
-        portfolio = await broker.get_portfolio(token.access_token)
+        # Recuperer info client
+        client_info = client.get_client_info(token.access_token)
+        client_key = client_info.get("ClientKey")
+
+        if not client_key:
+            return json.dumps({
+                "error": "Client Saxo non trouve",
+                "authenticated": True,
+            }, ensure_ascii=False)
+
+        # Recuperer comptes et balances
+        accounts = client.get_accounts(token.access_token, client_key)
+        account_key = accounts[0].get("AccountKey") if accounts else None
+        account_currency = accounts[0].get("Currency", "EUR") if accounts else "EUR"
+
+        # Balances
+        total_account_value = 0
+        cash_available = 0
+        try:
+            balances = client.get_balances(token.access_token, client_key)
+            cash_available = balances.get("CashAvailableForTrading", 0)
+            total_account_value = balances.get("TotalValue", 0)
+        except Exception as e:
+            logger.warning(f"Could not fetch balances: {e}")
+
+        # Positions
+        positions_data = client.get_positions(token.access_token, client_key)
+
+        positions = []
+        total_value = 0
+        total_pnl = 0
+
+        for pos in positions_data:
+            base = pos.get("PositionBase", {})
+            view = pos.get("PositionView", {})
+            display = pos.get("DisplayAndFormat", {})
+
+            symbol = display.get("Symbol", "")
+            if not symbol:
+                symbol = f"UIC:{base.get('Uic', 'N/A')}"
+
+            quantity = base.get("Amount", 0) or 0
+            current_price = view.get("CurrentPrice", 0) or 0
+            avg_price = view.get("AverageOpenPrice", 0) or base.get("OpenPrice", 0) or 0
+
+            value = view.get("MarketValue", 0) or view.get("Exposure", 0) or 0
+            if value == 0 and current_price > 0:
+                value = current_price * abs(quantity)
+
+            pnl = view.get("ProfitLossOnTrade", 0) or 0
+            pnl_percent = view.get("ProfitLossOnTradeInPercentage", 0) or 0
+
+            if pnl_percent == 0 and avg_price > 0 and current_price > 0:
+                pnl_percent = ((current_price - avg_price) / avg_price) * 100
+
+            positions.append({
+                "symbol": symbol,
+                "description": display.get("Description", ""),
+                "quantity": quantity,
+                "current_price": round(current_price, 2),
+                "average_price": round(avg_price, 2),
+                "market_value": round(value, 2),
+                "pnl": round(pnl, 2),
+                "pnl_percent": round(pnl_percent, 2),
+                "currency": display.get("Currency", "EUR"),
+                "asset_type": base.get("AssetType", "Stock"),
+            })
+
+            total_value += abs(value)
+            total_pnl += pnl
+
+        total_pnl_percent = (total_pnl / total_value * 100) if total_value > 0 else 0
 
         # Formater le resultat
         output = {
             "authenticated": True,
-            "account_id": portfolio.account_id if hasattr(portfolio, 'account_id') else "N/A",
-            "total_value": portfolio.total_value if hasattr(portfolio, 'total_value') else 0,
-            "currency": portfolio.currency if hasattr(portfolio, 'currency') else "USD",
-            "positions_count": len(portfolio.positions) if hasattr(portfolio, 'positions') else 0,
-            "positions": [
-                {
-                    "symbol": pos.symbol if hasattr(pos, 'symbol') else "N/A",
-                    "quantity": pos.quantity if hasattr(pos, 'quantity') else 0,
-                    "current_price": pos.current_price if hasattr(pos, 'current_price') else 0,
-                    "market_value": pos.market_value if hasattr(pos, 'market_value') else 0,
-                    "unrealized_pnl": pos.unrealized_pnl if hasattr(pos, 'unrealized_pnl') else 0,
-                    "unrealized_pnl_percent": pos.unrealized_pnl_percent if hasattr(pos, 'unrealized_pnl_percent') else 0,
-                }
-                for pos in (portfolio.positions if hasattr(portfolio, 'positions') else [])
-            ],
+            "environment": token.environment,
+            "account_key": account_key,
+            "currency": account_currency,
+            "summary": {
+                "total_positions": len(positions),
+                "total_value": round(total_value, 2),
+                "total_pnl": round(total_pnl, 2),
+                "total_pnl_percent": round(total_pnl_percent, 2),
+                "cash_available": round(cash_available, 2),
+                "total_account_value": round(total_account_value, 2),
+            },
+            "positions": positions,
         }
 
         return json.dumps(output, ensure_ascii=False, indent=2)

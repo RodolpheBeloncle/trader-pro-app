@@ -25,7 +25,7 @@ from enum import Enum
 import httpx
 
 from src.infrastructure.persistence.encryption import get_encryption_service, EncryptionService
-from src.config.settings import settings
+from src.config.settings import settings, BACKEND_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ class ConfigService:
         _config: Configuration en mémoire
     """
 
-    DEFAULT_CONFIG_PATH = Path("data/config.encrypted.json")
+    DEFAULT_CONFIG_PATH = BACKEND_DIR / "data" / "config.encrypted.json"
 
     def __init__(
         self,

@@ -22,7 +22,11 @@ from pydantic_settings import BaseSettings
 from pydantic import Field, field_validator
 from typing import Optional
 from functools import lru_cache
+from pathlib import Path
 import secrets
+
+# Chemin absolu du répertoire backend
+BACKEND_DIR = Path(__file__).parent.parent.parent.resolve()
 
 
 class Settings(BaseSettings):
@@ -111,12 +115,8 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
-    # CHEMINS
+    # CHEMINS (non modifiables par variables d'environnement)
     # ==========================================================================
-    DATA_DIR: str = Field(
-        default="data",
-        description="Répertoire pour les données (tokens, cache)"
-    )
     TOKENS_FILE: str = Field(
         default="tokens.json",
         description="Nom du fichier de stockage des tokens"
@@ -125,10 +125,16 @@ class Settings(BaseSettings):
         default="markets.json",
         description="Nom du fichier des presets de marchés"
     )
-    DATABASE_PATH: str = Field(
-        default="data/stock_analyzer.db",
-        description="Chemin de la base de données SQLite"
-    )
+
+    @property
+    def DATA_DIR(self) -> str:
+        """Répertoire pour les données (calculé, non modifiable par env)."""
+        return str(BACKEND_DIR / "data")
+
+    @property
+    def DATABASE_PATH(self) -> str:
+        """Chemin de la base de données SQLite (calculé, non modifiable par env)."""
+        return str(BACKEND_DIR / "data" / "stock_analyzer.db")
 
     # ==========================================================================
     # TELEGRAM (pour les alertes)

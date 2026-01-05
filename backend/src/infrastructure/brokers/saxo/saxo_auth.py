@@ -46,9 +46,10 @@ class SaxoToken:
 
 class SaxoTokenManager:
     """
-    Gestionnaire de tokens Saxo - Singleton.
+    Gestionnaire de tokens Saxo - Singleton avec persistance fichier.
 
-    Stocke les tokens en memoire par environnement (SIM/LIVE).
+    Stocke les tokens en memoire ET dans un fichier JSON pour partage
+    entre processus (API web et serveur MCP).
     Thread-safe.
     """
     _instance = None
@@ -60,30 +61,82 @@ class SaxoTokenManager:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
                     cls._instance._tokens: Dict[str, SaxoToken] = {}
+                    cls._instance._init_file_path()
+                    cls._instance._load_from_file()
         return cls._instance
 
+    def _init_file_path(self) -> None:
+        """Initialise le chemin du fichier de tokens."""
+        from src.config.settings import BACKEND_DIR
+        self._file_path = BACKEND_DIR / "data" / "saxo_tokens.json"
+        self._file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _load_from_file(self) -> None:
+        """Charge les tokens depuis le fichier persistant."""
+        import json
+        try:
+            if self._file_path.exists():
+                with open(self._file_path, "r") as f:
+                    data = json.load(f)
+                for env, token_data in data.items():
+                    expires_at = datetime.fromisoformat(token_data["expires_at"])
+                    token = SaxoToken(
+                        access_token=token_data["access_token"],
+                        refresh_token=token_data["refresh_token"],
+                        expires_at=expires_at,
+                        environment=env
+                    )
+                    self._tokens[env] = token
+                logger.info(f"Loaded {len(self._tokens)} tokens from file")
+        except Exception as e:
+            logger.warning(f"Could not load tokens from file: {e}")
+
+    def _save_to_file(self) -> None:
+        """Sauvegarde les tokens dans le fichier persistant."""
+        import json
+        try:
+            data = {}
+            for env, token in self._tokens.items():
+                data[env] = {
+                    "access_token": token.access_token,
+                    "refresh_token": token.refresh_token,
+                    "expires_at": token.expires_at.isoformat(),
+                    "environment": env
+                }
+            with open(self._file_path, "w") as f:
+                json.dump(data, f, indent=2)
+            logger.info(f"Saved {len(data)} tokens to file")
+        except Exception as e:
+            logger.error(f"Could not save tokens to file: {e}")
+
     def save(self, token: SaxoToken) -> None:
-        """Sauvegarde un token."""
+        """Sauvegarde un token (memoire + fichier)."""
         with self._lock:
             self._tokens[token.environment] = token
+            self._save_to_file()
             logger.info(f"Token saved for {token.environment}, expires in {token.expires_in_seconds}s")
 
     def get(self, environment: str) -> Optional[SaxoToken]:
         """Recupere un token par environnement."""
         with self._lock:
+            # Recharger depuis le fichier si pas en memoire (nouveau processus)
+            if environment not in self._tokens:
+                self._load_from_file()
             return self._tokens.get(environment)
 
     def delete(self, environment: str) -> None:
-        """Supprime un token."""
+        """Supprime un token (memoire + fichier)."""
         with self._lock:
             if environment in self._tokens:
                 del self._tokens[environment]
+                self._save_to_file()
                 logger.info(f"Token deleted for {environment}")
 
     def clear(self) -> None:
-        """Supprime tous les tokens."""
+        """Supprime tous les tokens (memoire + fichier)."""
         with self._lock:
             self._tokens.clear()
+            self._save_to_file()
             logger.info("All tokens cleared")
 
 
