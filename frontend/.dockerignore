@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Git
+.git/
+.gitignore
+
+# Logs
+*.log
+npm-debug.log*
+
+# Cache
+.eslintcache
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs
+*.md

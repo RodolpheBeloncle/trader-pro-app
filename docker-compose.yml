@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # ==========================================================================
   # Backend - FastAPI Python Server
@@ -11,25 +9,39 @@ services:
     container_name: stock-analyzer-backend
     ports:
       - "8000:8000"
+
+    # Load secrets from .env file (SECURE - not exposed in docker-compose)
+    env_file:
+      - ./backend/.env
+
     environment:
       - PYTHONUNBUFFERED=1
-      # Saxo API Configuration (override in .env or docker-compose.override.yml)
-      - SAXO_APP_KEY=${SAXO_APP_KEY:-}
-      - SAXO_APP_SECRET=${SAXO_APP_SECRET:-}
-      - SAXO_ENVIRONMENT=${SAXO_ENVIRONMENT:-SIM}
-      - SAXO_REDIRECT_URI=${SAXO_REDIRECT_URI:-http://localhost:5173}
+      - PYTHONDONTWRITEBYTECODE=1
+
     volumes:
-      - ./backend:/app
-      - /app/venv  # Exclude venv from mount
-      - /app/__pycache__  # Exclude pycache
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+      # Mount source code for hot-reload in development
+      - ./backend/src:/app/src:cached
+      - ./backend/main.py:/app/main.py:cached
+      # Persist data directory (tokens, database, etc.)
+      - ./backend/data:/app/data
+      # Exclude these from mount (use container's version)
+      - backend_venv:/app/venv
+      - backend_pycache:/app/__pycache__
+
+    # Development mode with hot-reload
+    command: uvicorn src.api.app:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/src
+
     restart: unless-stopped
+
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 15s
+
+    networks:
+      - stock-analyzer-net
 
   # ==========================================================================
   # Frontend - React + Vite
@@ -41,20 +53,45 @@ services:
     container_name: stock-analyzer-frontend
     ports:
       - "5173:5173"
+
     volumes:
-      - ./frontend:/app
-      - /app/node_modules  # Exclude node_modules from mount
+      # Mount source code for hot-reload
+      - ./frontend/src:/app/src:cached
+      - ./frontend/index.html:/app/index.html:cached
+      - ./frontend/vite.config.js:/app/vite.config.js:cached
+      - ./frontend/tailwind.config.js:/app/tailwind.config.js:cached
+      - ./frontend/postcss.config.js:/app/postcss.config.js:cached
+      # Exclude node_modules (use container's version)
+      - frontend_node_modules:/app/node_modules
+
     environment:
       - VITE_API_URL=http://localhost:8000
+      - BACKEND_URL=http://backend:8000
+      - CHOKIDAR_USEPOLLING=true
+
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
+
     command: npm run dev -- --host 0.0.0.0
+
     restart: unless-stopped
 
+    networks:
+      - stock-analyzer-net
+
 # ==========================================================================
-# Networks (optional, for future services like Redis/PostgreSQL)
+# Named Volumes (better performance on macOS)
+# ==========================================================================
+volumes:
+  backend_venv:
+  backend_pycache:
+  frontend_node_modules:
+
+# ==========================================================================
+# Networks
 # ==========================================================================
 networks:
-  default:
+  stock-analyzer-net:
     name: stock-analyzer-network
+    driver: bridge

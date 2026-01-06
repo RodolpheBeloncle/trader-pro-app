@@ -3,11 +3,16 @@ Service d'authentification OAuth2 simplifie pour Saxo Bank.
 
 Architecture simple et fonctionnelle:
 - Pas de PKCE (inutile pour les apps confidentielles avec secret)
-- Token storage en memoire (singleton)
+- Token storage en memoire (singleton) avec persistance chiffree
 - Auto-refresh des tokens expires
+
+SECURITE:
+- Les tokens sont chiffres avec Fernet (AES-128-CBC) avant stockage
+- La cle de chiffrement doit etre configuree dans ENCRYPTION_KEY
 """
 
 import logging
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, Optional
@@ -17,6 +22,7 @@ import threading
 import requests
 
 from src.config.settings import Settings
+from src.infrastructure.persistence.encryption import get_encryption_service, EncryptionError
 
 logger = logging.getLogger(__name__)
 
@@ -72,13 +78,31 @@ class SaxoTokenManager:
         self._file_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _load_from_file(self) -> None:
-        """Charge les tokens depuis le fichier persistant."""
-        import json
+        """Charge et dechiffre les tokens depuis le fichier persistant."""
         try:
             if self._file_path.exists():
                 with open(self._file_path, "r") as f:
-                    data = json.load(f)
+                    file_data = json.load(f)
+
+                # Verifier si le fichier utilise le nouveau format chiffre
+                if "encrypted" in file_data:
+                    # Nouveau format: donnees chiffrees
+                    try:
+                        encryption = get_encryption_service()
+                        decrypted_json = encryption.decrypt(file_data["encrypted"])
+                        data = json.loads(decrypted_json)
+                    except EncryptionError as e:
+                        logger.error(f"Failed to decrypt tokens: {e}. Token file may be corrupted or key changed.")
+                        return
+                else:
+                    # Ancien format non chiffre - migration automatique
+                    logger.warning("Found unencrypted tokens file. Migrating to encrypted format...")
+                    data = file_data
+                    # La sauvegarde suivante chiffrera automatiquement
+
                 for env, token_data in data.items():
+                    if env in ("encrypted", "updated_at"):
+                        continue  # Skip metadata fields
                     expires_at = datetime.fromisoformat(token_data["expires_at"])
                     token = SaxoToken(
                         access_token=token_data["access_token"],
@@ -87,14 +111,22 @@ class SaxoTokenManager:
                         environment=env
                     )
                     self._tokens[env] = token
-                logger.info(f"Loaded {len(self._tokens)} tokens from file")
+
+                if self._tokens:
+                    logger.info(f"Loaded {len(self._tokens)} tokens from encrypted file")
+                    # Si migration depuis ancien format, sauvegarder en chiffre
+                    if "encrypted" not in file_data:
+                        self._save_to_file()
+                        logger.info("Tokens migrated to encrypted format")
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in tokens file: {e}")
         except Exception as e:
             logger.warning(f"Could not load tokens from file: {e}")
 
     def _save_to_file(self) -> None:
-        """Sauvegarde les tokens dans le fichier persistant."""
-        import json
+        """Chiffre et sauvegarde les tokens dans le fichier persistant."""
         try:
+            # Preparer les donnees des tokens
             data = {}
             for env, token in self._tokens.items():
                 data[env] = {
@@ -103,9 +135,24 @@ class SaxoTokenManager:
                     "expires_at": token.expires_at.isoformat(),
                     "environment": env
                 }
+
+            # Chiffrer les donnees
+            encryption = get_encryption_service()
+            json_data = json.dumps(data, ensure_ascii=False)
+            encrypted_data = encryption.encrypt(json_data)
+
+            # Sauvegarder avec metadata
+            file_content = {
+                "encrypted": encrypted_data,
+                "updated_at": datetime.now().isoformat()
+            }
+
             with open(self._file_path, "w") as f:
-                json.dump(data, f, indent=2)
-            logger.info(f"Saved {len(data)} tokens to file")
+                json.dump(file_content, f, indent=2)
+
+            logger.info(f"Saved {len(data)} tokens to encrypted file")
+        except EncryptionError as e:
+            logger.error(f"Could not encrypt tokens: {e}")
         except Exception as e:
             logger.error(f"Could not save tokens to file: {e}")
 

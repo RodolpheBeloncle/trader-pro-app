@@ -1,0 +1,44 @@
+# Virtual environment
+venv/
+.venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Tests
+tests/
+htmlcov/
+.coverage
+
+# Docs
+*.md
+docs/
+
+# Logs
+*.log
+logs/
+
+# Local data (will be mounted as volume)
+# data/
+
+# Environment file (loaded separately)
+# .env - Keep it for env_file directive
+.env.example
+.env.local
