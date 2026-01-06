@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Wallet, RefreshCw, TrendingUp, TrendingDown,
   AlertCircle, ExternalLink, LogOut,
@@ -52,6 +52,46 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
   const [decisionPanel, setDecisionPanel] = useState({ show: false, position: null })
   const [analysisModal, setAnalysisModal] = useState({ show: false, ticker: null, position: null })
   const [stopLossConfig, setStopLossConfig] = useState({}) // {symbol: {sl_price, tp_price, mode}}
+  const alertsLoadedRef = useRef(false)
+
+  // Load active alerts to display SL/TP in table (defined early to be used in useEffect)
+  const loadActiveAlerts = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/alerts?active_only=true`)
+      if (!res.ok) {
+        console.log('loadActiveAlerts: API returned not ok', res.status)
+        return
+      }
+
+      const alerts = await res.json()
+      console.log('loadActiveAlerts: Received alerts:', alerts.length, alerts.map(a => a.ticker))
+
+      // Group alerts by ticker to build stopLossConfig
+      const configBySymbol = {}
+
+      for (const alert of alerts) {
+        // Normalize symbol to uppercase for matching with portfolio positions
+        const symbol = alert.ticker?.toUpperCase()
+        if (!symbol) continue
+
+        if (!configBySymbol[symbol]) {
+          configBySymbol[symbol] = { mode: 'alert' }
+        }
+
+        // Determine if this is a stop loss or take profit based on alert type
+        if (alert.alert_type === 'price_below') {
+          configBySymbol[symbol].sl_price = alert.target_value
+        } else if (alert.alert_type === 'price_above') {
+          configBySymbol[symbol].tp_price = alert.target_value
+        }
+      }
+
+      console.log('loadActiveAlerts: Built config:', configBySymbol)
+      setStopLossConfig(configBySymbol)
+    } catch (err) {
+      console.error('Error loading active alerts:', err)
+    }
+  }, [])
 
   // Check status on mount
   // Note: OAuth callback is handled by App.jsx and passed via oauthResult prop
@@ -59,6 +99,8 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
     // Ne pas traiter le callback ici - c'est fait par App.jsx
     // Juste vérifier le statut
     checkStatus()
+    // Charger les alertes actives au démarrage (indépendant de Saxo)
+    loadActiveAlerts()
   }, [])
 
   // Handle OAuth result from parent
@@ -165,12 +207,16 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
       if (data.positions && data.positions.length > 0) {
         const sample = data.positions[0]
         console.log('Sample position:', sample)
+        console.log('All position symbols:', data.positions.map(p => p.symbol))
+        console.log('Current stopLossConfig keys:', Object.keys(stopLossConfig))
         if (!sample.current_price && !sample.market_value) {
           console.warn('Position sans prix - verifier API Saxo')
         }
       }
 
       setPortfolio(data)
+      // Reload alerts after portfolio to ensure matching
+      loadActiveAlerts()
       setError(null)
     } catch (err) {
       console.error('Portfolio load error:', err)
@@ -702,27 +748,41 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
                       </td>
                       {/* SL/TP Column */}
                       <td className="text-center p-3">
-                        {stopLossConfig[pos.symbol] ? (
-                          <div className="flex flex-col items-center text-xs">
-                            <span className="text-red-400 font-mono">
-                              SL: {stopLossConfig[pos.symbol].sl_price?.toFixed(2)}€
-                            </span>
-                            <span className="text-emerald-400 font-mono">
-                              TP: {stopLossConfig[pos.symbol].tp_price?.toFixed(2)}€
-                            </span>
-                            <span className="text-slate-500 text-[10px] mt-0.5">
-                              {stopLossConfig[pos.symbol].mode === 'order' ? '🔒 Ordre' : '🔔 Alerte'}
-                            </span>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => setStopLossModal({ show: true, position: pos })}
-                            className="bg-slate-700/50 hover:bg-slate-600/50 text-slate-400 hover:text-white px-2 py-1 rounded text-xs flex items-center gap-1 mx-auto"
-                          >
-                            <Target className="w-3 h-3" />
-                            Configurer
-                          </button>
-                        )}
+                        {(() => {
+                          // Normalize symbol for matching (uppercase)
+                          const normalizedSymbol = pos.symbol?.toUpperCase()
+                          const config = stopLossConfig[normalizedSymbol]
+
+                          if (config) {
+                            return (
+                              <div className="flex flex-col items-center text-xs">
+                                {config.sl_price && (
+                                  <span className="text-red-400 font-mono">
+                                    SL: {config.sl_price.toFixed(2)}€
+                                  </span>
+                                )}
+                                {config.tp_price && (
+                                  <span className="text-emerald-400 font-mono">
+                                    TP: {config.tp_price.toFixed(2)}€
+                                  </span>
+                                )}
+                                <span className="text-slate-500 text-[10px] mt-0.5">
+                                  {config.mode === 'order' ? '🔒 Ordre' : '🔔 Alerte'}
+                                </span>
+                              </div>
+                            )
+                          }
+
+                          return (
+                            <button
+                              onClick={() => setStopLossModal({ show: true, position: pos })}
+                              className="bg-slate-700/50 hover:bg-slate-600/50 text-slate-400 hover:text-white px-2 py-1 rounded text-xs flex items-center gap-1 mx-auto"
+                            >
+                              <Target className="w-3 h-3" />
+                              Configurer
+                            </button>
+                          )
+                        })()}
                       </td>
                       {/* Actions Column */}
                       <td className="text-center p-3">
@@ -1210,14 +1270,12 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
           position={stopLossModal.position}
           accountKey={portfolio?.account_key}
           onClose={() => setStopLossModal({ show: false, position: null })}
-          onSuccess={(msg) => {
-            // Update config state to show SL/TP in table
+          onSuccess={(msg, slPrice, tpPrice, mode) => {
+            // Update config state to show SL/TP in table with actual values
             const pos = stopLossModal.position
-            const slPrice = pos.current_price * (1 - 0.08)
-            const tpPrice = pos.current_price * (1 + 0.24)
             setStopLossConfig(prev => ({
               ...prev,
-              [pos.symbol]: { sl_price: slPrice, tp_price: tpPrice, mode: 'alert' }
+              [pos.symbol]: { sl_price: slPrice, tp_price: tpPrice, mode: mode || 'alert' }
             }))
             setSuccess(msg)
             setTimeout(() => setSuccess(null), 5000)

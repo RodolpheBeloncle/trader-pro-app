@@ -61,10 +61,11 @@ class AlertResponse(BaseModel):
 
     @classmethod
     def from_entity(cls, alert: Alert) -> "AlertResponse":
+        alert_type_str = alert.alert_type.value if hasattr(alert.alert_type, 'value') else str(alert.alert_type)
         return cls(
             id=alert.id,
             ticker=alert.ticker,
-            alert_type=alert.alert_type.value,
+            alert_type=alert_type_str,
             target_value=alert.target_value,
             current_value=alert.current_value,
             is_active=alert.is_active,

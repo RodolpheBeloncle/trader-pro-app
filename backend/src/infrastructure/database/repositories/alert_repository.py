@@ -139,10 +139,18 @@ class AlertRepository(BaseRepository[Alert]):
 
     def _row_to_entity(self, row: Any) -> Alert:
         """Convertit une ligne SQLite en Alert."""
+        # Convertir alert_type en enum de manière defensive
+        alert_type_raw = row["alert_type"]
+        try:
+            alert_type = AlertType(alert_type_raw) if isinstance(alert_type_raw, str) else alert_type_raw
+        except ValueError:
+            logger.warning(f"Unknown alert_type: {alert_type_raw}, defaulting to PRICE_ABOVE")
+            alert_type = AlertType.PRICE_ABOVE
+
         return Alert(
             id=row["id"],
             ticker=row["ticker"],
-            alert_type=AlertType(row["alert_type"]),
+            alert_type=alert_type,
             target_value=row["target_value"],
             current_value=row["current_value"],
             is_active=bool(row["is_active"]),
@@ -156,10 +164,11 @@ class AlertRepository(BaseRepository[Alert]):
 
     def _entity_to_dict(self, entity: Alert) -> Dict[str, Any]:
         """Convertit une Alert en dictionnaire."""
+        alert_type_str = entity.alert_type.value if hasattr(entity.alert_type, 'value') else str(entity.alert_type)
         return {
             "id": entity.id,
             "ticker": entity.ticker.upper(),
-            "alert_type": entity.alert_type.value,
+            "alert_type": alert_type_str,
             "target_value": entity.target_value,
             "current_value": entity.current_value,
             "is_active": entity.is_active,
@@ -210,7 +219,8 @@ class AlertRepository(BaseRepository[Alert]):
             tuple(data.values())
         )
 
-        logger.info(f"Alerte créée: {alert.ticker} {alert.alert_type.value} {alert.target_value}")
+        alert_type_str = alert.alert_type.value if hasattr(alert.alert_type, 'value') else str(alert.alert_type)
+        logger.info(f"Alerte créée: {alert.ticker} {alert_type_str} {alert.target_value}")
         return alert
 
     async def update(self, alert: Alert) -> Alert:

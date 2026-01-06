@@ -25,6 +25,7 @@ from src.infrastructure.database.repositories.alert_repository import (
 )
 from src.infrastructure.notifications.telegram_service import get_telegram_service
 from src.infrastructure.providers.yahoo_finance_provider import YahooFinanceProvider
+from src.domain.value_objects.ticker import Ticker
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,8 @@ class AlertService:
         current_value = None
         if alert_type_enum == AlertType.PERCENT_CHANGE:
             try:
-                quote = await self._price_provider.get_current_quote(ticker)
+                ticker_obj = Ticker(ticker)
+                quote = await self._price_provider.get_current_quote(ticker_obj)
                 current_value = quote.price
             except Exception as e:
                 logger.warning(f"Impossible de récupérer le prix pour {ticker}: {e}")
@@ -208,7 +210,8 @@ class AlertService:
 
         try:
             # Récupérer le prix actuel
-            quote = await self._price_provider.get_current_quote(alert.ticker)
+            ticker_obj = Ticker(alert.ticker)
+            quote = await self._price_provider.get_current_quote(ticker_obj)
             current_price = quote.price
 
             # Vérifier si l'alerte doit se déclencher
@@ -283,7 +286,8 @@ class AlertService:
         for alert in pending:
             try:
                 # Récupérer le prix actuel pour le message
-                quote = await self._price_provider.get_current_quote(alert.ticker)
+                ticker_obj = Ticker(alert.ticker)
+                quote = await self._price_provider.get_current_quote(ticker_obj)
 
                 alert_type_str = alert.alert_type.value if hasattr(alert.alert_type, 'value') else str(alert.alert_type)
                 sent = await self._telegram.send_alert(
@@ -327,7 +331,8 @@ class AlertService:
             return False
 
         try:
-            quote = await self._price_provider.get_current_quote(alert.ticker)
+            ticker_obj = Ticker(alert.ticker)
+            quote = await self._price_provider.get_current_quote(ticker_obj)
             current_price = quote.price
         except Exception:
             current_price = 0.0

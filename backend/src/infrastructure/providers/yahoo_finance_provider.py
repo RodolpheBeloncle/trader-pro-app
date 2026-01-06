@@ -52,6 +52,30 @@ class YahooFinanceProvider(StockDataProvider):
         _cache_ttl: Durée de vie du cache en secondes (futur usage)
     """
 
+    # Mapping Saxo exchange codes -> Yahoo Finance suffixes
+    SAXO_TO_YAHOO_EXCHANGE = {
+        "XMIL": ".MI",      # Milan
+        "XETR": ".DE",      # Frankfurt/Xetra
+        "XPAR": ".PA",      # Paris
+        "XLON": ".L",       # London
+        "XAMS": ".AS",      # Amsterdam
+        "XBRU": ".BR",      # Brussels
+        "XLIS": ".LS",      # Lisbon
+        "XMAD": ".MC",      # Madrid
+        "XSTO": ".ST",      # Stockholm
+        "XHEL": ".HE",      # Helsinki
+        "XCSE": ".CO",      # Copenhagen
+        "XOSL": ".OL",      # Oslo
+        "XSWX": ".SW",      # Swiss
+        "XTSE": ".TO",      # Toronto
+        "XASX": ".AX",      # Australia
+        "XHKG": ".HK",      # Hong Kong
+        "XTKS": ".T",       # Tokyo
+        "XNAS": "",         # NASDAQ (US, pas de suffixe)
+        "XNYS": "",         # NYSE (US, pas de suffixe)
+        "ARCX": "",         # NYSE Arca (US, pas de suffixe)
+    }
+
     def __init__(self, cache_ttl: int = 300):
         """
         Initialise le provider Yahoo Finance.
@@ -60,6 +84,42 @@ class YahooFinanceProvider(StockDataProvider):
             cache_ttl: TTL du cache en secondes (préparé pour futur cache Redis)
         """
         self._cache_ttl = cache_ttl
+
+    def _convert_saxo_to_yahoo_ticker(self, ticker_value: str) -> str:
+        """
+        Convertit un ticker format Saxo (SYMBOL:EXCHANGE) vers Yahoo Finance.
+
+        Args:
+            ticker_value: Ticker au format Saxo (ex: "VUSA:XMIL")
+
+        Returns:
+            Ticker au format Yahoo Finance (ex: "VUSA.MI")
+
+        Examples:
+            "VUSA:XMIL" -> "VUSA.MI"
+            "AAPL:XNAS" -> "AAPL"
+            "MC:XPAR" -> "MC.PA"
+            "AAPL" -> "AAPL" (inchangé si pas de format Saxo)
+        """
+        if ":" not in ticker_value:
+            return ticker_value
+
+        parts = ticker_value.split(":")
+        if len(parts) != 2:
+            return ticker_value
+
+        symbol, exchange = parts
+        exchange_upper = exchange.upper()
+
+        # Chercher le suffixe Yahoo correspondant
+        yahoo_suffix = self.SAXO_TO_YAHOO_EXCHANGE.get(exchange_upper)
+
+        if yahoo_suffix is not None:
+            return f"{symbol}{yahoo_suffix}"
+
+        # Si exchange inconnu, retourner le symbole seul
+        logger.warning(f"Unknown Saxo exchange: {exchange}, using symbol only: {symbol}")
+        return symbol
 
     async def get_historical_data(
         self,
@@ -82,9 +142,11 @@ class YahooFinanceProvider(StockDataProvider):
             DataFetchError: Si une erreur survient lors de la récupération
         """
         try:
-            logger.debug(f"Fetching {days} days of data for {ticker.value}")
+            # Convertir le ticker Saxo vers Yahoo Finance si nécessaire
+            yahoo_ticker = self._convert_saxo_to_yahoo_ticker(ticker.value)
+            logger.debug(f"Fetching {days} days of data for {ticker.value} (Yahoo: {yahoo_ticker})")
 
-            yf_ticker = yf.Ticker(ticker.value)
+            yf_ticker = yf.Ticker(yahoo_ticker)
             end_date = datetime.today()
             start_date = end_date - timedelta(days=days)
 
@@ -133,9 +195,11 @@ class YahooFinanceProvider(StockDataProvider):
             DataFetchError: Si une erreur survient
         """
         try:
-            logger.debug(f"Fetching current quote for {ticker.value}")
+            # Convertir le ticker Saxo vers Yahoo Finance si nécessaire
+            yahoo_ticker = self._convert_saxo_to_yahoo_ticker(ticker.value)
+            logger.debug(f"Fetching current quote for {ticker.value} (Yahoo: {yahoo_ticker})")
 
-            yf_ticker = yf.Ticker(ticker.value)
+            yf_ticker = yf.Ticker(yahoo_ticker)
 
             # Récupérer les derniers jours pour avoir le prix actuel
             hist = yf_ticker.history(period="5d")
@@ -187,9 +251,11 @@ class YahooFinanceProvider(StockDataProvider):
             DataFetchError: Si une erreur survient
         """
         try:
-            logger.debug(f"Fetching metadata for {ticker.value}")
+            # Convertir le ticker Saxo vers Yahoo Finance si nécessaire
+            yahoo_ticker = self._convert_saxo_to_yahoo_ticker(ticker.value)
+            logger.debug(f"Fetching metadata for {ticker.value} (Yahoo: {yahoo_ticker})")
 
-            yf_ticker = yf.Ticker(ticker.value)
+            yf_ticker = yf.Ticker(yahoo_ticker)
             info = self._get_ticker_info(yf_ticker)
 
             if not info:
@@ -278,7 +344,9 @@ class YahooFinanceProvider(StockDataProvider):
             True si le ticker existe et a des données
         """
         try:
-            yf_ticker = yf.Ticker(ticker.value)
+            # Convertir le ticker Saxo vers Yahoo Finance si nécessaire
+            yahoo_ticker = self._convert_saxo_to_yahoo_ticker(ticker.value)
+            yf_ticker = yf.Ticker(yahoo_ticker)
             hist = yf_ticker.history(period="5d")
             return not hist.empty
         except Exception:

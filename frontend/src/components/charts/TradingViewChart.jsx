@@ -200,6 +200,13 @@ export default function TradingViewChart({
           volumeSeriesRef.current.setData(data.volume)
         }
 
+        // Resize chart to container width (important after visibility change)
+        if (chartContainerRef.current) {
+          chartRef.current.applyOptions({
+            width: chartContainerRef.current.clientWidth,
+          })
+        }
+
         // Fit content after data is set
         chartRef.current.timeScale().fitContent()
       }
@@ -208,60 +215,60 @@ export default function TradingViewChart({
     }
   }, [data, showVolume])
 
-  // Loading state
-  if (loading) {
-    return (
-      <div
-        className={`flex items-center justify-center bg-slate-800/30 rounded-xl ${className}`}
-        style={{ height }}
-      >
-        <div className="flex flex-col items-center gap-3 text-slate-400">
-          <Loader2 className="w-8 h-8 animate-spin" />
-          <span>Loading chart...</span>
-        </div>
-      </div>
-    )
-  }
-
-  // Error state
-  if (error) {
-    return (
-      <div
-        className={`flex items-center justify-center bg-slate-800/30 rounded-xl ${className}`}
-        style={{ height }}
-      >
-        <div className="flex flex-col items-center gap-3 text-red-400">
-          <AlertCircle className="w-8 h-8" />
-          <span>Failed to load chart</span>
-          <button
-            onClick={fetchOHLCData}
-            className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm"
-          >
-            Retry
-          </button>
-        </div>
-      </div>
-    )
-  }
-
-  // No data state
-  if (!data || !data.candles || data.candles.length === 0) {
-    return (
-      <div
-        className={`flex items-center justify-center bg-slate-800/30 rounded-xl ${className}`}
-        style={{ height }}
-      >
-        <div className="flex flex-col items-center gap-3 text-slate-400">
-          <TrendingUp className="w-8 h-8 opacity-50" />
-          <span>No chart data available</span>
-        </div>
-      </div>
-    )
-  }
+  // Determine overlay state
+  const showLoading = loading
+  const showError = !loading && error
+  const showNoData = !loading && !error && (!data || !data.candles || data.candles.length === 0)
 
   return (
-    <div className={`relative ${className}`}>
-      <div ref={chartContainerRef} style={{ height }} />
+    <div className={`relative ${className}`} style={{ height }}>
+      {/* Chart container - always rendered to maintain ref */}
+      <div
+        ref={chartContainerRef}
+        style={{ height, visibility: (showLoading || showError || showNoData) ? 'hidden' : 'visible' }}
+      />
+
+      {/* Loading overlay */}
+      {showLoading && (
+        <div
+          className="absolute inset-0 flex items-center justify-center bg-slate-800/30 rounded-xl"
+        >
+          <div className="flex flex-col items-center gap-3 text-slate-400">
+            <Loader2 className="w-8 h-8 animate-spin" />
+            <span>Loading chart...</span>
+          </div>
+        </div>
+      )}
+
+      {/* Error overlay */}
+      {showError && (
+        <div
+          className="absolute inset-0 flex items-center justify-center bg-slate-800/30 rounded-xl"
+        >
+          <div className="flex flex-col items-center gap-3 text-red-400">
+            <AlertCircle className="w-8 h-8" />
+            <span>Failed to load chart</span>
+            <button
+              onClick={() => fetchOHLCData(ticker)}
+              className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* No data overlay */}
+      {showNoData && (
+        <div
+          className="absolute inset-0 flex items-center justify-center bg-slate-800/30 rounded-xl"
+        >
+          <div className="flex flex-col items-center gap-3 text-slate-400">
+            <TrendingUp className="w-8 h-8 opacity-50" />
+            <span>No chart data available</span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

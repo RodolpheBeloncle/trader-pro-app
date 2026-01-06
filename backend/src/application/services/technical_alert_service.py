@@ -23,6 +23,7 @@ from src.infrastructure.brokers.saxo.saxo_api_client import SaxoApiClient
 from src.config.settings import get_settings
 from src.infrastructure.notifications.telegram_service import get_telegram_service
 from src.infrastructure.providers.yahoo_finance_provider import YahooFinanceProvider
+from src.domain.value_objects.ticker import Ticker
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,7 @@ class TechnicalAlertService:
         try:
             # Utiliser le systeme d'auth Saxo existant
             auth = get_saxo_auth()
-            token = auth.get_current_token()
+            token = auth.get_valid_token()
 
             # Verifier si authentifie
             if not token:
@@ -134,12 +135,12 @@ class TechnicalAlertService:
         """
         return await self._analyze_position(ticker)
 
-    async def _analyze_position(self, ticker: str) -> List[TechnicalSignal]:
+    async def _analyze_position(self, ticker_str: str) -> List[TechnicalSignal]:
         """
         Analyse une position pour detecter des signaux techniques.
 
         Args:
-            ticker: Symbole du ticker
+            ticker_str: Symbole du ticker (string)
 
         Returns:
             Liste des signaux pour cette position
@@ -147,39 +148,45 @@ class TechnicalAlertService:
         signals = []
 
         try:
+            # Convertir en objet Ticker
+            ticker = Ticker(ticker_str)
+
             # Recuperer donnees historiques (30 jours)
             history = await self._price_provider.get_historical_data(
                 ticker,
-                period="1mo",
+                days=30,
                 interval="1d"
             )
 
             if history is None or len(history) < 14:
-                logger.debug(f"Not enough data for {ticker}")
+                logger.debug(f"Not enough data for {ticker_str}")
                 return signals
 
-            # Prix actuel
-            current_price = history["Close"].iloc[-1]
+            # Extraire les prix de cloture depuis List[HistoricalDataPoint]
+            close_prices = [point.close for point in history]
+
+            # Prix actuel (dernier prix de cloture)
+            current_price = close_prices[-1]
 
             # Calculer RSI
-            rsi = self._calculate_rsi(history["Close"].values)
+            rsi = self._calculate_rsi(close_prices)
             if rsi is not None:
-                rsi_signal = self._check_rsi_signal(ticker, current_price, rsi)
+                rsi_signal = self._check_rsi_signal(ticker_str, current_price, rsi)
                 if rsi_signal:
                     signals.append(rsi_signal)
 
             # Calculer MACD
-            macd_signal = self._check_macd_signal(ticker, current_price, history["Close"].values)
+            macd_signal = self._check_macd_signal(ticker_str, current_price, close_prices)
             if macd_signal:
                 signals.append(macd_signal)
 
             # Calculer Bollinger Bands
-            bb_signal = self._check_bollinger_signal(ticker, current_price, history["Close"].values)
+            bb_signal = self._check_bollinger_signal(ticker_str, current_price, close_prices)
             if bb_signal:
                 signals.append(bb_signal)
 
         except Exception as e:
-            logger.error(f"Error analyzing {ticker}: {e}")
+            logger.error(f"Error analyzing {ticker_str}: {e}")
 
         return signals
 

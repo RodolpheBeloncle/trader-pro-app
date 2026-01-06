@@ -71,7 +71,13 @@ export default function StopLossModal({ position, onClose, onSuccess, onError, a
         const data = await res.json()
 
         if (res.ok && data.success) {
-          onSuccess?.(`Alertes Telegram creees: SL ${stopLossPrice.toFixed(2)}€, TP ${takeProfitPrice.toFixed(2)}€`)
+          // Pass actual SL/TP prices and mode to parent callback
+          onSuccess?.(
+            `Alertes Telegram creees: SL ${stopLossPrice.toFixed(2)}€, TP ${takeProfitPrice.toFixed(2)}€`,
+            stopLossPrice,
+            takeProfitPrice,
+            'alert'
+          )
           onClose()
         } else {
           throw new Error(data.detail || 'Erreur creation alertes')
@@ -132,7 +138,13 @@ export default function StopLossModal({ position, onClose, onSuccess, onError, a
           results.push(type)
         }
 
-        onSuccess?.(`Ordres Saxo crees: ${results.join(', ')}`)
+        // Pass actual SL/TP prices and mode to parent callback
+        onSuccess?.(
+          `Ordres Saxo crees: ${results.join(', ')}`,
+          stopLossPrice,
+          takeProfitPrice,
+          'order'
+        )
         onClose()
       }
 

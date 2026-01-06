@@ -725,7 +725,7 @@ async def get_position_alerts(symbol: str):
             "alerts": [
                 {
                     "id": a.id,
-                    "type": a.alert_type.value,
+                    "type": a.alert_type.value if hasattr(a.alert_type, 'value') else str(a.alert_type),
                     "target_price": a.target_value,
                     "notes": a.notes,
                     "created_at": a.created_at,

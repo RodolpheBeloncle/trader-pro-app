@@ -45,12 +45,13 @@ async def create_alert_tool(
             notes=notes if notes else None,
         )
 
+        alert_type_str = alert.alert_type.value if hasattr(alert.alert_type, 'value') else str(alert.alert_type)
         result = {
             "success": True,
             "alert": {
                 "id": alert.id,
                 "ticker": alert.ticker,
-                "alert_type": alert.alert_type.value,
+                "alert_type": alert_type_str,
                 "target_value": alert.target_value,
                 "is_active": alert.is_active,
                 "created_at": alert.created_at,
@@ -101,7 +102,7 @@ async def list_alerts_tool(
                 {
                     "id": a.id,
                     "ticker": a.ticker,
-                    "alert_type": a.alert_type.value,
+                    "alert_type": a.alert_type.value if hasattr(a.alert_type, 'value') else str(a.alert_type),
                     "target_value": a.target_value,
                     "is_active": a.is_active,
                     "is_triggered": a.is_triggered,
