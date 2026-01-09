@@ -81,9 +81,9 @@ class HybridPriceStreamer:
         self._trading_mode = trading_mode or TradingMode.LONG_TERM
         self._mode_config = get_mode_config(self._trading_mode)
 
-        # Appliquer les intervalles du mode
-        self._poll_interval = self._mode_config.poll_interval or poll_interval
-        self._priority_interval = self._mode_config.priority_interval or priority_interval
+        # Appliquer les intervalles du mode (0.0 est valide pour temps reel)
+        self._poll_interval = self._mode_config.poll_interval if self._mode_config.poll_interval is not None else poll_interval
+        self._priority_interval = self._mode_config.priority_interval if self._mode_config.priority_interval is not None else priority_interval
 
         # Sources de prix
         self._sources: Dict[str, PriceSource] = {}
@@ -177,9 +177,9 @@ class HybridPriceStreamer:
 
         logger.info(f"Trading mode changed: {old_mode.value} -> {mode.value}")
 
-        # Mettre a jour les intervalles
-        self._poll_interval = self._mode_config.poll_interval or 60.0
-        self._priority_interval = self._mode_config.priority_interval or 30.0
+        # Mettre a jour les intervalles (attention: 0.0 est valide pour scalping)
+        self._poll_interval = self._mode_config.poll_interval if self._mode_config.poll_interval is not None else 60.0
+        self._priority_interval = self._mode_config.priority_interval if self._mode_config.priority_interval is not None else 30.0
 
         # Redemarrer si en cours d'execution
         was_running = self._running
@@ -214,8 +214,23 @@ class HybridPriceStreamer:
                     if hasattr(source, 'connect'):
                         await source.connect()
                         logger.info(f"Activated realtime source: {name}")
+
+                    # S'abonner aux tickers actifs avec callback temps reel
+                    if hasattr(source, 'subscribe'):
+                        active_tickers = self.manager.active_tickers
+                        for ticker in active_tickers:
+                            try:
+                                await source.subscribe(ticker, self._handle_realtime_quote)
+                                logger.debug(f"Subscribed {ticker} to realtime source {name}")
+                            except Exception as e:
+                                logger.warning(f"Failed to subscribe {ticker} to {name}: {e}")
                 except Exception as e:
                     logger.warning(f"Failed to activate {name}: {e}")
+
+    async def _handle_realtime_quote(self, quote: PriceQuote) -> None:
+        """Callback pour les prix temps reel - broadcast direct au frontend."""
+        if quote:
+            await self._broadcast_quote(quote)
 
     async def _deactivate_realtime_sources(self) -> None:
         """Desactive les sources temps reel."""
@@ -311,6 +326,16 @@ class HybridPriceStreamer:
 
         logger.debug(f"Subscribed to {ticker} (priority={priority})")
 
+        # Si en mode temps reel, s'abonner aux sources WebSocket
+        if self._mode_config.use_websocket:
+            for name, rt_source in self._realtime_sources.items():
+                if rt_source.is_realtime and hasattr(rt_source, 'subscribe'):
+                    try:
+                        await rt_source.subscribe(ticker, self._handle_realtime_quote)
+                        logger.info(f"Subscribed {ticker} to realtime source {name}")
+                    except Exception as e:
+                        logger.warning(f"Failed to subscribe {ticker} to {name}: {e}")
+
         # Envoyer le prix actuel immediatement
         await self.force_update(ticker)
 
@@ -388,13 +413,17 @@ class HybridPriceStreamer:
             interval: Intervalle en secondes
             priority: Si True, ne poll que les tickers prioritaires
         """
+        # En mode scalping (interval=0), utiliser un intervalle minimum pour eviter surcharge
+        # Le temps reel est gere par les WebSocket sources, pas par le polling
+        effective_interval = max(interval, 2.0) if interval == 0 else interval
+
         while self._running:
             try:
                 await self._poll_tickers(priority_only=priority)
             except Exception as e:
                 logger.exception(f"Error in polling loop: {e}")
 
-            await asyncio.sleep(interval)
+            await asyncio.sleep(effective_interval)
 
     async def _poll_tickers(self, priority_only: bool = False) -> None:
         """Poll les tickers selon leurs priorites."""

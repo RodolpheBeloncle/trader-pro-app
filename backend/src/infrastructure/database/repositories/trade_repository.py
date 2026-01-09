@@ -357,6 +357,25 @@ class TradeRepository(BaseRepository[Trade]):
         )
         return await self.get_by_id(trade_id)
 
+    async def delete(self, trade_id: str) -> bool:
+        """
+        Supprime un trade de la base de données.
+
+        Args:
+            trade_id: ID du trade à supprimer
+
+        Returns:
+            True si supprimé, False sinon
+        """
+        result = await self.db.execute(
+            f"DELETE FROM {self.table_name} WHERE id = ?",
+            (trade_id,)
+        )
+        deleted = result.rowcount > 0 if hasattr(result, 'rowcount') else True
+        if deleted:
+            logger.info(f"Trade supprimé: {trade_id}")
+        return deleted
+
     async def get_by_status(self, status: TradeStatus) -> List[Trade]:
         """
         Récupère les trades par statut.

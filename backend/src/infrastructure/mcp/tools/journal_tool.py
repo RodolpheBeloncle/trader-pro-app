@@ -1,20 +1,61 @@
 """
 Outils MCP pour le journal de trading.
 
-Ces outils permettent à Claude Desktop de:
-- Logger de nouveaux trades
-- Clôturer des trades avec P&L
-- Consulter les statistiques de performance
-- Ajouter des analyses post-trade
+Ces outils utilisent l'API HTTP du backend Docker pour garantir
+que Claude Desktop et l'interface web partagent les mêmes données.
+
+ARCHITECTURE:
+    Claude Desktop MCP → HTTP API → Docker Backend → SQLite
+    Web Frontend       → HTTP API → Docker Backend → SQLite
 """
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
-from src.application.services.journal_service import JournalService
+import httpx
 
 logger = logging.getLogger(__name__)
+
+# URL de base de l'API (backend Docker)
+API_BASE_URL = "http://localhost:8000/api"
+HTTP_TIMEOUT = 30.0
+
+
+async def _api_request(
+    method: str,
+    endpoint: str,
+    data: Dict[str, Any] = None,
+    params: Dict[str, Any] = None
+) -> Dict[str, Any]:
+    """
+    Effectue une requête HTTP vers l'API backend.
+
+    Args:
+        method: GET, POST, PUT, DELETE
+        endpoint: Chemin de l'endpoint (ex: /journal/trades)
+        data: Données JSON pour POST/PUT
+        params: Paramètres de query string
+
+    Returns:
+        Réponse JSON de l'API
+    """
+    url = f"{API_BASE_URL}{endpoint}"
+
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        if method.upper() == "GET":
+            response = await client.get(url, params=params)
+        elif method.upper() == "POST":
+            response = await client.post(url, json=data)
+        elif method.upper() == "PUT":
+            response = await client.put(url, json=data)
+        elif method.upper() == "DELETE":
+            response = await client.delete(url, params=params)
+        else:
+            raise ValueError(f"Méthode HTTP non supportée: {method}")
+
+        response.raise_for_status()
+        return response.json()
 
 
 async def log_trade_tool(
@@ -31,7 +72,7 @@ async def log_trade_tool(
     confluence_factors: str = ""
 ) -> str:
     """
-    Enregistre un nouveau trade dans le journal.
+    Enregistre un nouveau trade dans le journal via l'API HTTP.
 
     Args:
         ticker: Symbole du ticker
@@ -50,48 +91,74 @@ async def log_trade_tool(
         JSON avec le trade créé
     """
     try:
-        service = JournalService()
+        # Construire le payload pour l'API
+        payload = {
+            "ticker": ticker.upper(),
+            "direction": direction,
+        }
 
-        # Parser les facteurs de confluence
-        factors = [f.strip() for f in confluence_factors.split(",") if f.strip()] if confluence_factors else None
+        # Ajouter les champs optionnels
+        if entry_price > 0:
+            payload["entry_price"] = entry_price
+        if stop_loss > 0:
+            payload["stop_loss"] = stop_loss
+        if take_profit > 0:
+            payload["take_profit"] = take_profit
+        if position_size > 0:
+            payload["position_size"] = position_size
+        if status:
+            payload["status"] = status
+        if setup_type:
+            payload["setup_type"] = setup_type
+        if trade_thesis:
+            payload["trade_thesis"] = trade_thesis
+        if timeframe:
+            payload["timeframe"] = timeframe
+        if confluence_factors:
+            payload["confluence_factors"] = [f.strip() for f in confluence_factors.split(",") if f.strip()]
 
-        trade = await service.create_trade(
-            ticker=ticker.upper(),
-            direction=direction,
-            entry_price=entry_price if entry_price > 0 else None,
-            stop_loss=stop_loss if stop_loss > 0 else None,
-            take_profit=take_profit if take_profit > 0 else None,
-            position_size=position_size if position_size > 0 else None,
-            status=status,
-            setup_type=setup_type if setup_type else None,
-            trade_thesis=trade_thesis if trade_thesis else None,
-            timeframe=timeframe if timeframe else None,
-            confluence_factors=factors,
-            notify=True,
-        )
+        # Appeler l'API
+        trade = await _api_request("POST", "/journal/trades", data=payload)
+
+        # Calculer le R/R ratio si possible
+        rr_ratio = None
+        if trade.get("entry_price") and trade.get("stop_loss") and trade.get("take_profit"):
+            entry = trade["entry_price"]
+            sl = trade["stop_loss"]
+            tp = trade["take_profit"]
+            risk = abs(entry - sl)
+            reward = abs(tp - entry)
+            if risk > 0:
+                rr_ratio = round(reward / risk, 2)
 
         result = {
             "success": True,
             "trade": {
-                "id": trade.id,
-                "ticker": trade.ticker,
-                "direction": trade.direction.value,
-                "status": trade.status.value,
-                "entry_price": trade.entry_price,
-                "stop_loss": trade.stop_loss,
-                "take_profit": trade.take_profit,
-                "position_size": trade.position_size,
-                "risk_reward_ratio": trade.risk_reward_ratio,
+                "id": trade.get("id"),
+                "ticker": trade.get("ticker"),
+                "direction": trade.get("direction"),
+                "status": trade.get("status"),
+                "entry_price": trade.get("entry_price"),
+                "stop_loss": trade.get("stop_loss"),
+                "take_profit": trade.get("take_profit"),
+                "position_size": trade.get("position_size"),
+                "risk_reward_ratio": rr_ratio,
             },
-            "message": f"Trade {trade.ticker} {trade.direction.value} enregistré ({trade.status.value})"
+            "message": f"Trade {trade.get('ticker')} {trade.get('direction')} enregistré ({trade.get('status')})"
         }
 
         return json.dumps(result, ensure_ascii=False, indent=2)
 
-    except ValueError as e:
+    except httpx.HTTPStatusError as e:
+        error_detail = "Erreur API"
+        try:
+            error_detail = e.response.json().get("detail", str(e))
+        except Exception:
+            error_detail = str(e)
+        logger.error(f"HTTP error logging trade: {error_detail}")
         return json.dumps({
             "success": False,
-            "error": str(e)
+            "error": error_detail
         }, ensure_ascii=False)
     except Exception as e:
         logger.exception(f"Error logging trade: {e}")
@@ -107,7 +174,7 @@ async def close_trade_tool(
     fees: float = 0
 ) -> str:
     """
-    Clôture un trade avec calcul du P&L.
+    Clôture un trade avec calcul du P&L via l'API HTTP.
 
     Args:
         trade_id: ID du trade à clôturer
@@ -118,38 +185,43 @@ async def close_trade_tool(
         JSON avec le trade clôturé et le P&L
     """
     try:
-        service = JournalService()
-        trade = await service.close_trade(
-            trade_id=trade_id,
-            exit_price=exit_price,
-            fees=fees,
-            notify=True,
-        )
+        payload = {
+            "exit_price": exit_price,
+            "exit_reason": "manual"
+        }
+        if fees > 0:
+            payload["fees"] = fees
 
-        if trade is None:
-            return json.dumps({
-                "success": False,
-                "error": "Trade non trouvé ou n'est pas actif"
-            }, ensure_ascii=False)
+        trade = await _api_request("POST", f"/journal/trades/{trade_id}/close", data=payload)
 
         result = {
             "success": True,
             "trade": {
-                "id": trade.id,
-                "ticker": trade.ticker,
-                "direction": trade.direction.value,
-                "entry_price": trade.entry_price,
-                "exit_price": trade.exit_price,
-                "gross_pnl": trade.gross_pnl,
-                "net_pnl": trade.net_pnl,
-                "r_multiple": trade.r_multiple,
-                "is_winner": trade.is_winner,
+                "id": trade.get("id"),
+                "ticker": trade.get("ticker"),
+                "direction": trade.get("direction"),
+                "entry_price": trade.get("entry_price"),
+                "exit_price": trade.get("exit_price"),
+                "gross_pnl": trade.get("gross_pnl"),
+                "net_pnl": trade.get("net_pnl"),
+                "r_multiple": trade.get("r_multiple"),
+                "is_winner": trade.get("net_pnl", 0) > 0 if trade.get("net_pnl") is not None else None,
             },
-            "message": f"Trade {trade.ticker} clôturé: P&L = {trade.net_pnl:+.2f} ({trade.r_multiple:+.2f}R)"
+            "message": f"Trade {trade.get('ticker')} clôturé: P&L = {trade.get('net_pnl', 0):+.2f}"
         }
 
         return json.dumps(result, ensure_ascii=False, indent=2)
 
+    except httpx.HTTPStatusError as e:
+        error_detail = "Trade non trouvé ou erreur"
+        try:
+            error_detail = e.response.json().get("detail", str(e))
+        except Exception:
+            pass
+        return json.dumps({
+            "success": False,
+            "error": error_detail
+        }, ensure_ascii=False)
     except Exception as e:
         logger.exception(f"Error closing trade: {e}")
         return json.dumps({
@@ -160,14 +232,13 @@ async def close_trade_tool(
 
 async def get_journal_stats_tool() -> str:
     """
-    Retourne les statistiques globales du journal de trading.
+    Retourne les statistiques globales du journal de trading via l'API HTTP.
 
     Returns:
         JSON avec les statistiques de performance
     """
     try:
-        service = JournalService()
-        stats = await service.get_stats()
+        stats = await _api_request("GET", "/journal/stats")
 
         return json.dumps({
             "success": True,
@@ -188,7 +259,7 @@ def _interpret_stats(stats: Dict[str, Any]) -> Dict[str, str]:
     interpretation = {}
 
     # Win rate
-    win_rate = stats.get("win_rate", 0)
+    win_rate = stats.get("win_rate", 0) or 0
     if win_rate >= 60:
         interpretation["win_rate"] = "Excellent taux de réussite"
     elif win_rate >= 50:
@@ -199,7 +270,7 @@ def _interpret_stats(stats: Dict[str, Any]) -> Dict[str, str]:
         interpretation["win_rate"] = "Taux faible - revoir les setups"
 
     # Profit factor
-    pf = stats.get("profit_factor", 0)
+    pf = stats.get("profit_factor", 0) or 0
     if pf >= 2:
         interpretation["profit_factor"] = "Excellent profit factor"
     elif pf >= 1.5:
@@ -210,7 +281,7 @@ def _interpret_stats(stats: Dict[str, Any]) -> Dict[str, str]:
         interpretation["profit_factor"] = "Non rentable - revoir la stratégie"
 
     # R-multiple moyen
-    avg_r = stats.get("avg_r_multiple", 0)
+    avg_r = stats.get("avg_r_multiple", 0) or 0
     if avg_r >= 1:
         interpretation["avg_r"] = "Excellent R moyen - bonne gestion R/R"
     elif avg_r >= 0.5:
@@ -225,7 +296,7 @@ def _interpret_stats(stats: Dict[str, Any]) -> Dict[str, str]:
 
 async def get_journal_dashboard_tool() -> str:
     """
-    Retourne un dashboard complet du journal de trading.
+    Retourne un dashboard complet du journal de trading via l'API HTTP.
 
     Inclut: stats, trades actifs, récents, erreurs et leçons.
 
@@ -233,8 +304,7 @@ async def get_journal_dashboard_tool() -> str:
         JSON avec le dashboard
     """
     try:
-        service = JournalService()
-        dashboard = await service.get_dashboard()
+        dashboard = await _api_request("GET", "/journal/dashboard")
 
         return json.dumps({
             "success": True,
@@ -255,7 +325,7 @@ async def list_trades_tool(
     limit: int = 10
 ) -> str:
     """
-    Liste les trades du journal.
+    Liste les trades du journal via l'API HTTP.
 
     Args:
         status: Filtrer par statut (planned, active, closed, cancelled)
@@ -266,26 +336,29 @@ async def list_trades_tool(
         JSON avec la liste des trades
     """
     try:
-        service = JournalService()
-        trades = await service.get_trades(
-            status=status if status else None,
-            ticker=ticker if ticker else None,
-            limit=limit,
-        )
+        params = {"limit": limit}
+        if status:
+            params["status"] = status
+        if ticker:
+            params["ticker"] = ticker
+
+        trades = await _api_request("GET", "/journal/trades", params=params)
 
         result = {
             "success": True,
             "count": len(trades),
             "trades": [
                 {
-                    "id": t.id,
-                    "ticker": t.ticker,
-                    "direction": t.direction.value,
-                    "status": t.status.value,
-                    "entry_price": t.entry_price,
-                    "exit_price": t.exit_price,
-                    "net_pnl": t.net_pnl,
-                    "r_multiple": t.r_multiple,
+                    "id": t.get("id"),
+                    "ticker": t.get("ticker"),
+                    "direction": t.get("direction"),
+                    "status": t.get("status"),
+                    "entry_price": t.get("entry_price"),
+                    "exit_price": t.get("exit_price"),
+                    "stop_loss": t.get("stop_loss"),
+                    "take_profit": t.get("take_profit"),
+                    "net_pnl": t.get("net_pnl"),
+                    "r_multiple": t.get("r_multiple"),
                 }
                 for t in trades
             ]
@@ -312,7 +385,7 @@ async def add_post_trade_analysis_tool(
     lessons_learned: str = ""
 ) -> str:
     """
-    Ajoute une analyse post-trade à une entrée de journal.
+    Ajoute une analyse post-trade à une entrée de journal via l'API HTTP.
 
     Args:
         trade_id: ID du trade
@@ -328,37 +401,36 @@ async def add_post_trade_analysis_tool(
         JSON avec le résultat
     """
     try:
-        service = JournalService()
+        payload = {
+            "execution_quality": execution_quality,
+            "emotional_state": emotional_state,
+            "process_compliance": process_compliance,
+            "trade_quality_score": trade_quality_score,
+        }
 
-        mistakes_list = [m.strip() for m in mistakes.split(",") if m.strip()] if mistakes else None
-        well_list = [w.strip() for w in what_went_well.split(",") if w.strip()] if what_went_well else None
+        if mistakes:
+            payload["mistakes"] = [m.strip() for m in mistakes.split(",") if m.strip()]
+        if what_went_well:
+            payload["what_went_well"] = [w.strip() for w in what_went_well.split(",") if w.strip()]
+        if lessons_learned:
+            payload["lessons_learned"] = lessons_learned
 
-        entry = await service.add_post_trade_analysis(
-            trade_id=trade_id,
-            execution_quality=execution_quality,
-            emotional_state=emotional_state,
-            process_compliance=process_compliance,
-            trade_quality_score=trade_quality_score,
-            mistakes=mistakes_list,
-            what_went_well=well_list,
-            lessons_learned=lessons_learned if lessons_learned else None,
-        )
-
-        if entry is None:
-            return json.dumps({
-                "success": False,
-                "error": "Entrée de journal non trouvée pour ce trade"
-            }, ensure_ascii=False)
+        await _api_request("POST", f"/journal/trades/{trade_id}/analysis", data=payload)
 
         return json.dumps({
             "success": True,
             "message": f"Analyse post-trade ajoutée (score: {trade_quality_score}/10)"
         }, ensure_ascii=False)
 
-    except ValueError as e:
+    except httpx.HTTPStatusError as e:
+        error_detail = "Entrée de journal non trouvée"
+        try:
+            error_detail = e.response.json().get("detail", str(e))
+        except Exception:
+            pass
         return json.dumps({
             "success": False,
-            "error": str(e)
+            "error": error_detail
         }, ensure_ascii=False)
     except Exception as e:
         logger.exception(f"Error adding post-trade analysis: {e}")

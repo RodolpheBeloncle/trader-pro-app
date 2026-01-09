@@ -149,6 +149,7 @@ async def list_sources():
         # Source descriptions
         descriptions = {
             "yahoo": "Yahoo Finance (polling toutes les 10s, données différées)",
+            "finnhub": "Finnhub WebSocket (temps réel, nécessite clé API gratuite)",
             "saxo": "Saxo Bank WebSocket (temps réel, nécessite authentification)",
         }
 

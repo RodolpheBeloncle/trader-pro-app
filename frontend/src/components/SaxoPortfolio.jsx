@@ -2,13 +2,15 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Wallet, RefreshCw, TrendingUp, TrendingDown,
   AlertCircle, ExternalLink, LogOut,
-  History, ShoppingCart, Search, X, Bell, Shield, Lightbulb, Target
+  History, ShoppingCart, Search, X, Bell, Shield, Lightbulb, Target, Wifi, WifiOff
 } from 'lucide-react'
 import StopLossModal from './StopLossModal'
 import PositionDecisionPanel from './PositionDecisionPanel'
 import TickerAnalysisModal from './TickerAnalysisModal'
 
 const API_BASE = '/api'
+const WS_BASE = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+const WS_URL = `${WS_BASE}//${window.location.host}/ws/prices`
 
 // Sub-tabs
 const TABS = [
@@ -35,6 +37,8 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
   const [searchQuery, setSearchQuery] = useState(initialTicker || '')
   const [searchResults, setSearchResults] = useState([])
   const [selectedInstrument, setSelectedInstrument] = useState(null)
+  const [instrumentAnalysis, setInstrumentAnalysis] = useState(null)
+  const [loadingAnalysis, setLoadingAnalysis] = useState(false)
   const [orderForm, setOrderForm] = useState({
     quantity: 1,
     orderType: 'Market',
@@ -54,6 +58,182 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
   const [stopLossConfig, setStopLossConfig] = useState({}) // {symbol: {sl_price, tp_price, mode}}
   const alertsLoadedRef = useRef(false)
 
+  // WebSocket state for real-time prices
+  const [wsConnected, setWsConnected] = useState(false)
+  const [realtimePrices, setRealtimePrices] = useState({}) // {symbol: {price, change, change_percent, timestamp, flash}}
+  const [streamingMode, setStreamingMode] = useState(null) // Current streaming mode info
+  const wsRef = useRef(null)
+  const reconnectTimeoutRef = useRef(null)
+  const subscribedTickersRef = useRef(new Set())
+
+  // ==========================================================================
+  // WEBSOCKET - Real-time price updates
+  // ==========================================================================
+
+  // Connect to WebSocket
+  const connectWebSocket = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      return // Already connected
+    }
+
+    try {
+      console.log('[WS] Connecting to', WS_URL)
+      const ws = new WebSocket(WS_URL)
+
+      ws.onopen = () => {
+        console.log('[WS] Connected')
+        setWsConnected(true)
+        // Re-subscribe to all tickers we were tracking
+        subscribedTickersRef.current.forEach(ticker => {
+          ws.send(JSON.stringify({ type: 'subscribe', ticker }))
+        })
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+
+          if (data.type === 'price_update') {
+            const ticker = data.ticker?.toUpperCase()
+            if (ticker) {
+              setRealtimePrices(prev => {
+                const prevPrice = prev[ticker]?.price
+                const newPrice = data.price
+                const isUp = prevPrice && newPrice > prevPrice
+                const isDown = prevPrice && newPrice < prevPrice
+
+                return {
+                  ...prev,
+                  [ticker]: {
+                    price: newPrice,
+                    change: data.change,
+                    change_percent: data.change_percent,
+                    bid: data.bid,
+                    ask: data.ask,
+                    source: data.source,
+                    timestamp: data.timestamp || new Date().toISOString(),
+                    flash: isUp ? 'up' : isDown ? 'down' : null
+                  }
+                }
+              })
+
+              // Clear flash after animation
+              setTimeout(() => {
+                setRealtimePrices(prev => ({
+                  ...prev,
+                  [ticker]: { ...prev[ticker], flash: null }
+                }))
+              }, 500)
+            }
+          } else if (data.type === 'connected') {
+            console.log('[WS] Client ID:', data.client_id)
+          } else if (data.type === 'subscribed') {
+            console.log('[WS] Subscribed to', data.ticker)
+          }
+        } catch (e) {
+          console.error('[WS] Parse error:', e)
+        }
+      }
+
+      ws.onclose = (event) => {
+        console.log('[WS] Disconnected:', event.code, event.reason)
+        setWsConnected(false)
+        wsRef.current = null
+
+        // Reconnect after delay (unless intentionally closed)
+        if (event.code !== 1000) {
+          reconnectTimeoutRef.current = setTimeout(() => {
+            console.log('[WS] Reconnecting...')
+            connectWebSocket()
+          }, 3000)
+        }
+      }
+
+      ws.onerror = (error) => {
+        console.error('[WS] Error:', error)
+      }
+
+      wsRef.current = ws
+    } catch (e) {
+      console.error('[WS] Connection error:', e)
+    }
+  }, [])
+
+  // Subscribe to ticker
+  const subscribeToTicker = useCallback((ticker) => {
+    if (!ticker) return
+    const normalizedTicker = ticker.toUpperCase()
+
+    subscribedTickersRef.current.add(normalizedTicker)
+
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'subscribe', ticker: normalizedTicker }))
+    }
+  }, [])
+
+  // Unsubscribe from ticker
+  const unsubscribeFromTicker = useCallback((ticker) => {
+    if (!ticker) return
+    const normalizedTicker = ticker.toUpperCase()
+
+    subscribedTickersRef.current.delete(normalizedTicker)
+
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'unsubscribe', ticker: normalizedTicker }))
+    }
+  }, [])
+
+  // Subscribe to all portfolio tickers
+  const subscribeToPortfolio = useCallback((positions) => {
+    if (!positions?.length) return
+
+    positions.forEach(pos => {
+      if (pos.symbol) {
+        subscribeToTicker(pos.symbol)
+      }
+    })
+  }, [subscribeToTicker])
+
+  // Load streaming status
+  const loadStreamingStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/ws/streaming/status')
+      if (res.ok) {
+        const data = await res.json()
+        setStreamingMode(data)
+      }
+    } catch (e) {
+      console.error('Error loading streaming status:', e)
+    }
+  }, [])
+
+  // Connect WebSocket on mount
+  useEffect(() => {
+    connectWebSocket()
+    loadStreamingStatus()
+
+    // Refresh streaming status periodically
+    const statusInterval = setInterval(loadStreamingStatus, 30000)
+
+    return () => {
+      clearInterval(statusInterval)
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current)
+      }
+      if (wsRef.current) {
+        wsRef.current.close(1000, 'Component unmounting')
+      }
+    }
+  }, [connectWebSocket, loadStreamingStatus])
+
+  // Subscribe to portfolio tickers when portfolio loads
+  useEffect(() => {
+    if (portfolio?.positions?.length > 0) {
+      subscribeToPortfolio(portfolio.positions)
+    }
+  }, [portfolio?.positions, subscribeToPortfolio])
+
+  // ==========================================================================
   // Load active alerts to display SL/TP in table (defined early to be used in useEffect)
   const loadActiveAlerts = useCallback(async () => {
     try {
@@ -288,15 +468,52 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
           r => r.symbol?.toUpperCase() === query.toUpperCase()
         )
         if (exactMatch) {
-          setSelectedInstrument(exactMatch)
-          setSearchResults([])
-          setSearchQuery('')
+          // Use handleSelectInstrument to also load the analysis
+          handleSelectInstrument(exactMatch)
         }
       }
     } catch (err) {
       setError('Erreur recherche')
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Load instrument analysis when an instrument is selected
+  const loadInstrumentAnalysis = async (symbol) => {
+    if (!symbol) {
+      setInstrumentAnalysis(null)
+      return
+    }
+
+    try {
+      setLoadingAnalysis(true)
+      const res = await fetch(`${API_BASE}/saxo/instruments/${encodeURIComponent(symbol)}/analyze`)
+
+      if (!res.ok) {
+        console.warn('Instrument analysis not available:', res.status)
+        setInstrumentAnalysis(null)
+        return
+      }
+
+      const data = await res.json()
+      setInstrumentAnalysis(data)
+    } catch (err) {
+      console.error('Error loading instrument analysis:', err)
+      setInstrumentAnalysis(null)
+    } finally {
+      setLoadingAnalysis(false)
+    }
+  }
+
+  // Handle instrument selection with analysis loading
+  const handleSelectInstrument = (instrument) => {
+    setSelectedInstrument(instrument)
+    setSearchResults([])
+    setSearchQuery('')
+    // Load analysis for the selected instrument
+    if (instrument?.symbol) {
+      loadInstrumentAnalysis(instrument.symbol)
     }
   }
 
@@ -521,8 +738,25 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
               }`}>
                 {status?.environment === 'LIVE' ? 'PROD' : 'DEMO'}
               </span>
+              {/* WebSocket Status */}
+              <span className={`px-2 py-0.5 rounded text-xs font-medium flex items-center gap-1 ${
+                wsConnected
+                  ? 'bg-emerald-600/20 text-emerald-400'
+                  : 'bg-slate-600/20 text-slate-400'
+              }`} title={wsConnected ? `Streaming: ${streamingMode?.trading_mode_name || 'Actif'}` : 'Streaming deconnecte'}>
+                {wsConnected ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+                {streamingMode?.trading_mode_name || (wsConnected ? 'Live' : 'Off')}
+              </span>
             </div>
-            <p className="text-sm text-slate-400">Connecte</p>
+            <p className="text-sm text-slate-400 flex items-center gap-2">
+              Connecte
+              {streamingMode && (
+                <span className="text-xs text-slate-500">
+                  • Sources: {streamingMode.sources?.join(', ') || 'yahoo'}
+                  {streamingMode.use_websocket ? ' (temps reel)' : ` (${streamingMode.poll_interval}s)`}
+                </span>
+              )}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -617,6 +851,26 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
       {/* Portfolio Tab */}
       {activeTab === 'portfolio' && portfolio && (
         <div className="space-y-6">
+          {/* Calculate real-time totals */}
+          {(() => {
+            // Calculate live totals from real-time prices
+            let liveTotalValue = 0
+            let totalCostBasis = 0
+
+            portfolio.positions.forEach(pos => {
+              const rtPrice = realtimePrices[pos.symbol?.toUpperCase()]
+              const price = rtPrice?.price ?? pos.current_price
+              const marketValue = price ? price * pos.quantity : pos.market_value
+              liveTotalValue += marketValue || 0
+              totalCostBasis += (pos.average_price * pos.quantity) || 0
+            })
+
+            const liveTotalPnl = liveTotalValue - totalCostBasis
+            const liveTotalPnlPercent = totalCostBasis > 0 ? (liveTotalPnl / totalCostBasis) * 100 : 0
+            const hasRealtimeData = Object.keys(realtimePrices).length > 0
+
+            return (
+              <>
           {/* Account Balance Banner */}
           {(portfolio.summary.cash_available != null || portfolio.summary.total_account_value != null) && (
             <div className="bg-gradient-to-r from-blue-900/40 to-purple-900/40 border border-blue-700/50 rounded-xl p-4">
@@ -637,10 +891,11 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
                     <div className="border-l border-blue-700/50 pl-6">
                       <p className="text-xs text-purple-300 uppercase tracking-wide">Valeur compte total</p>
                       <p className="text-xl font-bold text-white">
-                        {portfolio.summary.total_account_value.toLocaleString('fr-FR', {
+                        {(portfolio.summary.cash_available + liveTotalValue).toLocaleString('fr-FR', {
                           style: 'currency',
                           currency: portfolio.summary.currency || 'EUR'
                         })}
+                        {hasRealtimeData && <span className="ml-1 text-[10px] text-emerald-500">●</span>}
                       </p>
                     </div>
                   )}
@@ -656,33 +911,42 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
               <p className="text-2xl font-bold">{portfolio.summary.total_positions}</p>
             </div>
             <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
-              <p className="text-sm text-slate-400">Valeur positions</p>
+              <p className="text-sm text-slate-400 flex items-center gap-1">
+                Valeur positions
+                {hasRealtimeData && <span className="text-[10px] text-emerald-500">● live</span>}
+              </p>
               <p className="text-2xl font-bold">
-                {portfolio.summary.total_value.toLocaleString('fr-FR', {
+                {liveTotalValue.toLocaleString('fr-FR', {
                   style: 'currency',
                   currency: portfolio.summary.currency || 'EUR'
                 })}
               </p>
             </div>
             <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
-              <p className="text-sm text-slate-400">P&L Total</p>
+              <p className="text-sm text-slate-400 flex items-center gap-1">
+                P&L Total
+                {hasRealtimeData && <span className="text-[10px] text-emerald-500">● live</span>}
+              </p>
               <p className={`text-2xl font-bold ${
-                portfolio.summary.total_pnl >= 0 ? 'text-emerald-400' : 'text-red-400'
+                liveTotalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'
               }`}>
-                {portfolio.summary.total_pnl >= 0 ? '+' : ''}
-                {portfolio.summary.total_pnl.toLocaleString('fr-FR', {
+                {liveTotalPnl >= 0 ? '+' : ''}
+                {liveTotalPnl.toLocaleString('fr-FR', {
                   style: 'currency',
                   currency: portfolio.summary.currency || 'EUR'
                 })}
               </p>
             </div>
             <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
-              <p className="text-sm text-slate-400">P&L %</p>
+              <p className="text-sm text-slate-400 flex items-center gap-1">
+                P&L %
+                {hasRealtimeData && <span className="text-[10px] text-emerald-500">● live</span>}
+              </p>
               <p className={`text-2xl font-bold ${
-                portfolio.summary.total_pnl_percent >= 0 ? 'text-emerald-400' : 'text-red-400'
+                liveTotalPnlPercent >= 0 ? 'text-emerald-400' : 'text-red-400'
               }`}>
-                {portfolio.summary.total_pnl_percent >= 0 ? '+' : ''}
-                {portfolio.summary.total_pnl_percent.toFixed(2)}%
+                {liveTotalPnlPercent >= 0 ? '+' : ''}
+                {liveTotalPnlPercent.toFixed(2)}%
               </p>
             </div>
           </div>
@@ -690,6 +954,19 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
           {/* Positions */}
           {portfolio.positions.length > 0 ? (
             <div className="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden overflow-x-auto">
+              {/* Legend for price indicators */}
+              <div className="px-4 py-2 bg-slate-900/30 border-b border-slate-700/50 flex items-center gap-4 text-xs text-slate-400">
+                <span className="font-medium">Prix:</span>
+                <span className="flex items-center gap-1">
+                  <span className="text-emerald-500">●</span> Temps reel
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="text-amber-500">◐</span> Pas de streaming (prix Saxo)
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="text-slate-500">○</span> Prix de cloture
+                </span>
+              </div>
               <table className="w-full min-w-[900px]">
                 <thead className="bg-slate-900/50">
                   <tr>
@@ -704,7 +981,19 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
                   </tr>
                 </thead>
                 <tbody>
-                  {portfolio.positions.map((pos, idx) => (
+                  {portfolio.positions.map((pos, idx) => {
+                    // Get real-time price if available
+                    const rtPrice = realtimePrices[pos.symbol?.toUpperCase()]
+                    const displayPrice = rtPrice?.price ?? pos.current_price
+                    const priceFlash = rtPrice?.flash
+
+                    // Recalculate P&L with real-time price
+                    const liveMarketValue = displayPrice ? displayPrice * pos.quantity : pos.market_value
+                    const costBasis = pos.average_price * pos.quantity
+                    const livePnl = liveMarketValue - costBasis
+                    const livePnlPercent = costBasis > 0 ? (livePnl / costBasis) * 100 : 0
+
+                    return (
                     <tr key={idx} className="border-t border-slate-700/50 hover:bg-slate-700/20">
                       <td className="p-3">
                         <span
@@ -715,6 +1004,9 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
                           {pos.symbol}
                         </span>
                         <p className="text-xs text-slate-500 truncate max-w-[180px]">{pos.description}</p>
+                        {rtPrice?.source && (
+                          <p className="text-[10px] text-slate-600">{rtPrice.source}</p>
+                        )}
                       </td>
                       <td className="text-right p-3 font-mono">{pos.quantity}</td>
                       <td className="text-right p-3 font-mono text-slate-400">
@@ -723,27 +1015,46 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
                           maximumFractionDigits: 2
                         })}
                       </td>
-                      <td className="text-right p-3 font-mono font-semibold">
-                        {pos.current_price?.toLocaleString('fr-FR', {
+                      <td className={`text-right p-3 font-mono font-semibold transition-all duration-300 ${
+                        priceFlash === 'up' ? 'bg-emerald-500/30 text-emerald-300' :
+                        priceFlash === 'down' ? 'bg-red-500/30 text-red-300' : ''
+                      }`}>
+                        {displayPrice?.toLocaleString('fr-FR', {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2
                         })}
+                        {rtPrice ? (
+                          <span className="ml-1 text-[10px] text-emerald-500" title="Prix temps reel">●</span>
+                        ) : subscribedTickersRef.current.has(pos.symbol?.toUpperCase()) ? (
+                          <span
+                            className="ml-1 text-[10px] text-amber-500 cursor-help"
+                            title="Pas de streaming disponible pour ce ticker (prix Saxo utilise)"
+                          >◐</span>
+                        ) : (
+                          <span className="ml-1 text-[10px] text-slate-500" title="Prix de cloture">○</span>
+                        )}
                       </td>
-                      <td className="text-right p-3 font-mono">
-                        {pos.market_value?.toLocaleString('fr-FR', {
+                      <td className={`text-right p-3 font-mono transition-all duration-300 ${
+                        priceFlash === 'up' ? 'bg-emerald-500/20' :
+                        priceFlash === 'down' ? 'bg-red-500/20' : ''
+                      }`}>
+                        {liveMarketValue?.toLocaleString('fr-FR', {
                           style: 'currency',
                           currency: pos.currency || 'EUR'
                         })}
                       </td>
-                      <td className="text-right p-3">
-                        <div className={`font-semibold ${pos.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                          {pos.pnl >= 0 ? '+' : ''}{pos.pnl?.toLocaleString('fr-FR', {
+                      <td className={`text-right p-3 transition-all duration-300 ${
+                        priceFlash === 'up' ? 'bg-emerald-500/20' :
+                        priceFlash === 'down' ? 'bg-red-500/20' : ''
+                      }`}>
+                        <div className={`font-semibold ${livePnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {livePnl >= 0 ? '+' : ''}{livePnl?.toLocaleString('fr-FR', {
                             style: 'currency',
                             currency: pos.currency || 'EUR'
                           })}
                         </div>
-                        <div className={`text-xs ${pos.pnl_percent >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                          {pos.pnl_percent >= 0 ? '+' : ''}{pos.pnl_percent?.toFixed(2)}%
+                        <div className={`text-xs ${livePnlPercent >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                          {livePnlPercent >= 0 ? '+' : ''}{livePnlPercent?.toFixed(2)}%
                         </div>
                       </td>
                       {/* SL/TP Column */}
@@ -803,12 +1114,15 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
                           </button>
                           <button
                             onClick={() => {
-                              setSelectedInstrument({
+                              const instrument = {
                                 uic: pos.uic,
                                 symbol: pos.symbol,
                                 description: pos.description,
                                 asset_type: pos.asset_type
-                              })
+                              }
+                              setSelectedInstrument(instrument)
+                              setInstrumentAnalysis(null)
+                              loadInstrumentAnalysis(pos.symbol)
                               setOrderForm({ ...orderForm, buySell: 'Buy' })
                               setActiveTab('trade')
                             }}
@@ -818,12 +1132,15 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
                           </button>
                           <button
                             onClick={() => {
-                              setSelectedInstrument({
+                              const instrument = {
                                 uic: pos.uic,
                                 symbol: pos.symbol,
                                 description: pos.description,
                                 asset_type: pos.asset_type
-                              })
+                              }
+                              setSelectedInstrument(instrument)
+                              setInstrumentAnalysis(null)
+                              loadInstrumentAnalysis(pos.symbol)
                               setOrderForm({ ...orderForm, buySell: 'Sell' })
                               setActiveTab('trade')
                             }}
@@ -834,7 +1151,7 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
                         </div>
                       </td>
                     </tr>
-                  ))}
+                  )})}
                 </tbody>
               </table>
             </div>
@@ -844,6 +1161,9 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
               <p className="text-slate-400">Aucune position</p>
             </div>
           )}
+              </>
+            )
+          })()}
         </div>
       )}
 
@@ -881,11 +1201,7 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
                 {searchResults.map((inst, idx) => (
                   <div
                     key={idx}
-                    onClick={() => {
-                      setSelectedInstrument(inst)
-                      setSearchResults([])
-                      setSearchQuery('')
-                    }}
+                    onClick={() => handleSelectInstrument(inst)}
                     className="bg-slate-900/50 hover:bg-slate-700/50 border border-slate-600 rounded-lg p-3 cursor-pointer"
                   >
                     <div className="flex justify-between">
@@ -901,6 +1217,216 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
             )}
           </div>
 
+          {/* Instrument Analysis Panel */}
+          {selectedInstrument && (
+            <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-6">
+              <div className="flex justify-between items-start mb-4">
+                <div>
+                  <h3 className="text-lg font-semibold flex items-center gap-2">
+                    <Target className="w-5 h-5 text-blue-400" />
+                    Analyse de {selectedInstrument.symbol}
+                  </h3>
+                  <p className="text-slate-400 mt-1">{selectedInstrument.description}</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setSelectedInstrument(null)
+                    setInstrumentAnalysis(null)
+                  }}
+                  className="text-slate-400 hover:text-white"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {loadingAnalysis ? (
+                <div className="flex items-center justify-center py-8">
+                  <RefreshCw className="w-8 h-8 animate-spin text-blue-400" />
+                  <span className="ml-3 text-slate-400">Analyse en cours...</span>
+                </div>
+              ) : instrumentAnalysis ? (
+                <div className="space-y-4">
+                  {/* Price & Recommendation Summary */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="bg-slate-900/50 rounded-lg p-3">
+                      <div className="text-sm text-slate-400">Prix actuel</div>
+                      <div className="text-xl font-bold">{instrumentAnalysis.price?.current_price?.toFixed(2)} {instrumentAnalysis.info?.currency}</div>
+                      <div className={`text-sm ${instrumentAnalysis.price?.change_percent >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {instrumentAnalysis.price?.change_percent >= 0 ? '+' : ''}{instrumentAnalysis.price?.change_percent?.toFixed(2)}%
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-900/50 rounded-lg p-3">
+                      <div className="text-sm text-slate-400">Recommandation</div>
+                      <div className={`text-xl font-bold ${
+                        instrumentAnalysis.recommendation?.action === 'BUY' ? 'text-emerald-400' :
+                        instrumentAnalysis.recommendation?.action === 'AVOID' ? 'text-red-400' : 'text-yellow-400'
+                      }`}>
+                        {instrumentAnalysis.recommendation?.action === 'BUY' ? 'ACHETER' :
+                         instrumentAnalysis.recommendation?.action === 'AVOID' ? 'EVITER' : 'ATTENDRE'}
+                      </div>
+                      <div className="text-sm text-slate-400">
+                        {'★'.repeat(instrumentAnalysis.recommendation?.rating || 0)}{'☆'.repeat(5 - (instrumentAnalysis.recommendation?.rating || 0))}
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-900/50 rounded-lg p-3">
+                      <div className="text-sm text-slate-400">RSI</div>
+                      <div className={`text-xl font-bold ${
+                        instrumentAnalysis.technical?.rsi > 70 ? 'text-red-400' :
+                        instrumentAnalysis.technical?.rsi < 30 ? 'text-emerald-400' : 'text-white'
+                      }`}>
+                        {instrumentAnalysis.technical?.rsi?.toFixed(0)}
+                      </div>
+                      <div className="text-sm text-slate-400">{instrumentAnalysis.technical?.rsi_signal}</div>
+                    </div>
+
+                    <div className="bg-slate-900/50 rounded-lg p-3">
+                      <div className="text-sm text-slate-400">Tendance</div>
+                      <div className={`text-xl font-bold ${
+                        instrumentAnalysis.technical?.trend === 'uptrend' ? 'text-emerald-400' :
+                        instrumentAnalysis.technical?.trend === 'downtrend' ? 'text-red-400' : 'text-yellow-400'
+                      }`}>
+                        {instrumentAnalysis.technical?.trend === 'uptrend' ? '↑ Haussiere' :
+                         instrumentAnalysis.technical?.trend === 'downtrend' ? '↓ Baissiere' : '→ Laterale'}
+                      </div>
+                      <div className="text-sm text-slate-400">{instrumentAnalysis.technical?.trend_strength}</div>
+                    </div>
+                  </div>
+
+                  {/* Trading Levels */}
+                  <div className="bg-slate-900/50 rounded-lg p-4">
+                    <h4 className="font-medium mb-3 flex items-center gap-2">
+                      <Shield className="w-4 h-4 text-blue-400" />
+                      Niveaux de Trading Suggeres
+                    </h4>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                      <div>
+                        <div className="text-slate-400">Stop Loss</div>
+                        <div className="font-medium text-red-400">
+                          {instrumentAnalysis.trading_levels?.suggested_stop_loss?.toFixed(2)} ({-instrumentAnalysis.trading_levels?.stop_loss_distance_pct?.toFixed(1)}%)
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-400">Take Profit 1 (2:1)</div>
+                        <div className="font-medium text-emerald-400">
+                          {instrumentAnalysis.trading_levels?.suggested_take_profit_1?.toFixed(2)} (+{instrumentAnalysis.trading_levels?.take_profit_1_distance_pct?.toFixed(1)}%)
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-400">Take Profit 2 (3:1)</div>
+                        <div className="font-medium text-emerald-400">
+                          {instrumentAnalysis.trading_levels?.suggested_take_profit_2?.toFixed(2)} (+{instrumentAnalysis.trading_levels?.take_profit_2_distance_pct?.toFixed(1)}%)
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-400">Ratio R/R</div>
+                        <div className="font-medium text-blue-400">{instrumentAnalysis.trading_levels?.risk_reward_ratio}:1</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Technical Indicators */}
+                  <div className="bg-slate-900/50 rounded-lg p-4">
+                    <h4 className="font-medium mb-3">Indicateurs Techniques</h4>
+                    <div className="grid grid-cols-3 md:grid-cols-6 gap-3 text-sm">
+                      <div>
+                        <div className="text-slate-400">MACD</div>
+                        <div className={`font-medium ${instrumentAnalysis.technical?.macd_trend === 'bullish' ? 'text-emerald-400' : instrumentAnalysis.technical?.macd_trend === 'bearish' ? 'text-red-400' : 'text-white'}`}>
+                          {instrumentAnalysis.technical?.macd_trend}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-400">SMA 50</div>
+                        <div className="font-medium">{instrumentAnalysis.technical?.sma_50?.toFixed(2)}</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-400">SMA 200</div>
+                        <div className="font-medium">{instrumentAnalysis.technical?.sma_200?.toFixed(2)}</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-400">Bollinger</div>
+                        <div className="font-medium">{instrumentAnalysis.technical?.bollinger_position}</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-400">ATR</div>
+                        <div className="font-medium">{instrumentAnalysis.technical?.atr?.toFixed(2)} ({instrumentAnalysis.technical?.atr_percent?.toFixed(1)}%)</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-400">52W Range</div>
+                        <div className="font-medium text-xs">
+                          {instrumentAnalysis.price?.week_52_low?.toFixed(0)} - {instrumentAnalysis.price?.week_52_high?.toFixed(0)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Pros & Cons */}
+                  {(instrumentAnalysis.recommendation?.pros?.length > 0 || instrumentAnalysis.recommendation?.cons?.length > 0) && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {instrumentAnalysis.recommendation?.pros?.length > 0 && (
+                        <div className="bg-emerald-900/20 border border-emerald-800/50 rounded-lg p-4">
+                          <h4 className="font-medium text-emerald-400 mb-2 flex items-center gap-2">
+                            <TrendingUp className="w-4 h-4" /> Points Positifs
+                          </h4>
+                          <ul className="space-y-1 text-sm">
+                            {instrumentAnalysis.recommendation.pros.map((pro, i) => (
+                              <li key={i} className="text-emerald-300">+ {pro}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {instrumentAnalysis.recommendation?.cons?.length > 0 && (
+                        <div className="bg-red-900/20 border border-red-800/50 rounded-lg p-4">
+                          <h4 className="font-medium text-red-400 mb-2 flex items-center gap-2">
+                            <TrendingDown className="w-4 h-4" /> Points Negatifs
+                          </h4>
+                          <ul className="space-y-1 text-sm">
+                            {instrumentAnalysis.recommendation.cons.map((con, i) => (
+                              <li key={i} className="text-red-300">- {con}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Sentiment */}
+                  {instrumentAnalysis.sentiment && (
+                    <div className="bg-slate-900/50 rounded-lg p-4">
+                      <h4 className="font-medium mb-2">Sentiment Marche</h4>
+                      <div className="flex items-center gap-4">
+                        <span className={`px-3 py-1 rounded-full text-sm ${
+                          instrumentAnalysis.sentiment.sentiment_label === 'bullish' ? 'bg-emerald-900/50 text-emerald-400' :
+                          instrumentAnalysis.sentiment.sentiment_label === 'bearish' ? 'bg-red-900/50 text-red-400' : 'bg-slate-700 text-slate-300'
+                        }`}>
+                          {instrumentAnalysis.sentiment.sentiment_label}
+                        </span>
+                        <span className="text-sm text-slate-400">
+                          Score: {instrumentAnalysis.sentiment.sentiment_score?.toFixed(2)} | {instrumentAnalysis.sentiment.news_count} news
+                        </span>
+                      </div>
+                      {instrumentAnalysis.sentiment.recent_headlines?.length > 0 && (
+                        <div className="mt-3 space-y-1">
+                          {instrumentAnalysis.sentiment.recent_headlines.slice(0, 3).map((news, i) => (
+                            <div key={i} className="text-xs text-slate-400 truncate">
+                              • {news.headline || news}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-center py-6 text-slate-400">
+                  <AlertCircle className="w-8 h-8 mx-auto mb-2" />
+                  Analyse non disponible pour cet instrument
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Order Form */}
           {selectedInstrument && (
             <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-6">
@@ -915,7 +1441,10 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
                   </p>
                 </div>
                 <button
-                  onClick={() => setSelectedInstrument(null)}
+                  onClick={() => {
+                    setSelectedInstrument(null)
+                    setInstrumentAnalysis(null)
+                  }}
                   className="text-slate-400 hover:text-white"
                 >
                   <X className="w-5 h-5" />
@@ -1295,12 +1824,15 @@ export default function SaxoPortfolio({ initialTicker, oauthResult, onOauthResul
           }}
           onTrade={(pos, direction) => {
             setDecisionPanel({ show: false, position: null })
-            setSelectedInstrument({
+            const instrument = {
               uic: pos.uic,
               symbol: pos.symbol,
               description: pos.description,
               asset_type: pos.asset_type
-            })
+            }
+            setSelectedInstrument(instrument)
+            setInstrumentAnalysis(null)
+            loadInstrumentAnalysis(pos.symbol)
             setOrderForm({ ...orderForm, buySell: direction })
             setActiveTab('trade')
           }}

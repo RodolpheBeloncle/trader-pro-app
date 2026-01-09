@@ -6,7 +6,6 @@
 
 import { apiClient } from "./client";
 import type {
-  StockAnalysis,
   StockResult,
   MarketPreset,
 } from "@/types/stock.types";

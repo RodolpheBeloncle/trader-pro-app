@@ -235,10 +235,14 @@ class SaxoAuthService:
             "response_type": "code",
             "client_id": self.settings.SAXO_APP_KEY,
             "redirect_uri": self.settings.SAXO_REDIRECT_URI,
+            # IMPORTANT: offline_access permet d'obtenir des refresh tokens longue duree
+            # Sans ce scope, le refresh token expire en meme temps que l'access token (~20min)
+            # Avec ce scope, le refresh token peut durer plusieurs jours/semaines
+            "scope": "offline_access",
         }
 
         url = f"{self.auth_url}/authorize?{urlencode(params)}"
-        logger.info(f"Generated auth URL for {self.environment}")
+        logger.info(f"Generated auth URL for {self.environment} with offline_access scope")
         return url
 
     def exchange_code(self, code: str) -> SaxoToken:

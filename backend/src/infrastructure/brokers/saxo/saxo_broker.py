@@ -17,8 +17,12 @@ https://www.developer.saxo/openapi/learn
 """
 
 import logging
+from collections import OrderedDict
 from datetime import datetime
 from typing import Dict, List, Optional
+
+# Limite du cache client_key pour eviter une croissance infinie
+MAX_CLIENT_KEY_CACHE_SIZE = 100
 
 from src.application.interfaces.broker_service import (
     BrokerService,
@@ -93,7 +97,7 @@ class SaxoBroker(BrokerService):
         self.api_client = SaxoApiClient(self.settings)
         self.token_store = token_store
 
-        self._client_key_cache: Dict[str, str] = {}
+        self._client_key_cache: OrderedDict[int, str] = OrderedDict()
 
     # =========================================================================
     # BROKER PROPERTIES
@@ -528,7 +532,7 @@ class SaxoBroker(BrokerService):
 
     async def _get_client_key(self, credentials: BrokerCredentials) -> str:
         """
-        Récupère le ClientKey (avec cache).
+        Récupère le ClientKey (avec cache LRU limité).
 
         Args:
             credentials: Credentials d'authentification
@@ -539,12 +543,18 @@ class SaxoBroker(BrokerService):
         token_hash = hash(credentials.access_token)
 
         if token_hash in self._client_key_cache:
+            # Déplacer en fin pour comportement LRU
+            self._client_key_cache.move_to_end(token_hash)
             return self._client_key_cache[token_hash]
 
         client_info = self.api_client.get_client_info(credentials.access_token)
         client_key = client_info.get("ClientKey", "")
 
+        # Ajouter au cache avec limite LRU
         self._client_key_cache[token_hash] = client_key
+        while len(self._client_key_cache) > MAX_CLIENT_KEY_CACHE_SIZE:
+            self._client_key_cache.popitem(last=False)
+
         return client_key
 
     def _map_asset_type_to_saxo(self, asset_type: str) -> str:

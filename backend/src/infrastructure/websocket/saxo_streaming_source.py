@@ -29,7 +29,7 @@ from src.infrastructure.websocket.price_source import (
     PriceQuote,
     PriceCallback,
 )
-from src.infrastructure.persistence.token_store import get_token_store
+from src.infrastructure.brokers.saxo.saxo_auth import get_saxo_auth
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,7 @@ class SaxoStreamingSource(PriceSource):
             user_id: ID utilisateur pour recuperer le token (default="default")
         """
         self._user_id = user_id
-        self._token_store = get_token_store()
+        self._saxo_auth = get_saxo_auth()
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._callbacks: Dict[str, Set[PriceCallback]] = {}
         self._subscriptions: Dict[str, SaxoSubscription] = {}
@@ -108,11 +108,11 @@ class SaxoStreamingSource(PriceSource):
         return self._connected
 
     async def _get_token(self) -> Optional[str]:
-        """Recupere le token Saxo depuis le store."""
+        """Recupere le token Saxo depuis le SaxoAuthService."""
         try:
-            stored = await self._token_store.get_token(self._user_id, "saxo")
-            if stored and not stored.is_expired:
-                return stored.access_token
+            token = self._saxo_auth.get_valid_token()
+            if token and not token.is_expired:
+                return token.access_token
             logger.warning("Saxo token expired or not found")
             return None
         except Exception as e:

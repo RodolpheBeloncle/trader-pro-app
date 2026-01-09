@@ -109,7 +109,7 @@ async def get_streaming_status():
 async def _get_source_availability_async() -> dict:
     """Verifie la disponibilite de chaque source (async)."""
     from src.config.settings import settings
-    from src.infrastructure.persistence.token_store import get_token_store
+    from src.infrastructure.brokers.saxo.saxo_auth import get_saxo_auth
 
     result = {
         "yahoo": {"available": True, "reason": "Toujours disponible"},
@@ -124,10 +124,10 @@ async def _get_source_availability_async() -> dict:
     else:
         result["finnhub"]["reason"] = "Cle API non configuree (FINNHUB_API_KEY)"
 
-    # Saxo
+    # Saxo - utiliser le meme systeme d'auth que le reste de l'app
     try:
-        token_store = get_token_store()
-        token = await token_store.get_token("default", "saxo")
+        saxo_auth = get_saxo_auth()
+        token = saxo_auth.get_valid_token()
         if token and not token.is_expired:
             result["saxo"]["available"] = True
             result["saxo"]["reason"] = "Token OAuth valide"
@@ -270,8 +270,15 @@ async def _handle_client_message(
     if msg_type == "subscribe":
         ticker = message.get("ticker", "").upper()
         if ticker:
+            # Ajouter au WebSocket manager (pour broadcast)
             await manager.subscribe(client_id, ticker)
-            logger.debug(f"Client {client_id} subscribed to {ticker}")
+
+            # IMPORTANT: Aussi souscrire au HybridPriceStreamer pour qu'il poll les prix
+            from src.infrastructure.websocket.hybrid_streamer import get_hybrid_streamer
+            streamer = get_hybrid_streamer()
+            await streamer.subscribe(ticker)
+
+            logger.info(f"Client {client_id} subscribed to {ticker}")
         else:
             await _send_error(manager, client_id, "Missing ticker for subscribe")
 
@@ -279,7 +286,15 @@ async def _handle_client_message(
         ticker = message.get("ticker", "").upper()
         if ticker:
             await manager.unsubscribe(client_id, ticker)
-            logger.debug(f"Client {client_id} unsubscribed from {ticker}")
+
+            # Verifier si d'autres clients sont encore abonnes avant de desabonner le streamer
+            remaining_subscribers = manager.get_subscribers(ticker)
+            if not remaining_subscribers:
+                from src.infrastructure.websocket.hybrid_streamer import get_hybrid_streamer
+                streamer = get_hybrid_streamer()
+                await streamer.unsubscribe(ticker)
+
+            logger.info(f"Client {client_id} unsubscribed from {ticker}")
         else:
             await _send_error(manager, client_id, "Missing ticker for unsubscribe")
 

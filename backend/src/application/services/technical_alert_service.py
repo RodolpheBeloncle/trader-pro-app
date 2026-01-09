@@ -66,13 +66,34 @@ class TechnicalAlertService:
         self._telegram = get_telegram_service()
         self._last_signals: Dict[str, str] = {}  # Cache pour eviter doublons
 
-    async def check_portfolio_signals(self) -> List[TechnicalSignal]:
+    async def check_portfolio_signals(
+        self,
+        rsi_enabled: bool = True,
+        rsi_overbought: int = 70,
+        rsi_oversold: int = 30,
+        macd_enabled: bool = True,
+        bollinger_enabled: bool = True,
+    ) -> List[TechnicalSignal]:
         """
         Verifie les signaux techniques pour le portefeuille Saxo.
+
+        Args:
+            rsi_enabled: Activer detection RSI
+            rsi_overbought: Seuil RSI surachat
+            rsi_oversold: Seuil RSI survente
+            macd_enabled: Activer detection MACD
+            bollinger_enabled: Activer detection Bollinger
 
         Returns:
             Liste des signaux detectes
         """
+        # Stocker les parametres pour _analyze_position
+        self._rsi_enabled = rsi_enabled
+        self._rsi_overbought = rsi_overbought
+        self._rsi_oversold = rsi_oversold
+        self._macd_enabled = macd_enabled
+        self._bollinger_enabled = bollinger_enabled
+
         signals = []
 
         try:
@@ -168,22 +189,28 @@ class TechnicalAlertService:
             # Prix actuel (dernier prix de cloture)
             current_price = close_prices[-1]
 
-            # Calculer RSI
-            rsi = self._calculate_rsi(close_prices)
-            if rsi is not None:
-                rsi_signal = self._check_rsi_signal(ticker_str, current_price, rsi)
-                if rsi_signal:
-                    signals.append(rsi_signal)
+            # Calculer RSI (si active)
+            rsi_enabled = getattr(self, '_rsi_enabled', True)
+            if rsi_enabled:
+                rsi = self._calculate_rsi(close_prices)
+                if rsi is not None:
+                    rsi_signal = self._check_rsi_signal(ticker_str, current_price, rsi)
+                    if rsi_signal:
+                        signals.append(rsi_signal)
 
-            # Calculer MACD
-            macd_signal = self._check_macd_signal(ticker_str, current_price, close_prices)
-            if macd_signal:
-                signals.append(macd_signal)
+            # Calculer MACD (si active)
+            macd_enabled = getattr(self, '_macd_enabled', True)
+            if macd_enabled:
+                macd_signal = self._check_macd_signal(ticker_str, current_price, close_prices)
+                if macd_signal:
+                    signals.append(macd_signal)
 
-            # Calculer Bollinger Bands
-            bb_signal = self._check_bollinger_signal(ticker_str, current_price, close_prices)
-            if bb_signal:
-                signals.append(bb_signal)
+            # Calculer Bollinger Bands (si active)
+            bollinger_enabled = getattr(self, '_bollinger_enabled', True)
+            if bollinger_enabled:
+                bb_signal = self._check_bollinger_signal(ticker_str, current_price, close_prices)
+                if bb_signal:
+                    signals.append(bb_signal)
 
         except Exception as e:
             logger.error(f"Error analyzing {ticker_str}: {e}")
@@ -244,7 +271,11 @@ class TechnicalAlertService:
         """
         signal_key = f"{ticker}_rsi"
 
-        if rsi >= self.RSI_OVERBOUGHT:
+        # Utiliser les seuils configurables ou les valeurs par defaut
+        rsi_overbought = getattr(self, '_rsi_overbought', self.RSI_OVERBOUGHT)
+        rsi_oversold = getattr(self, '_rsi_oversold', self.RSI_OVERSOLD)
+
+        if rsi >= rsi_overbought:
             signal_type = "rsi_overbought"
             message = f"RSI a {rsi:.1f} - Zone de surachat. Considerez prendre des profits."
             severity = "high" if rsi >= 80 else "medium"
@@ -263,7 +294,7 @@ class TechnicalAlertService:
                 severity=severity,
             )
 
-        elif rsi <= self.RSI_OVERSOLD:
+        elif rsi <= rsi_oversold:
             signal_type = "rsi_oversold"
             message = f"RSI a {rsi:.1f} - Zone de survente. Opportunite d'achat potentielle."
             severity = "high" if rsi <= 20 else "medium"

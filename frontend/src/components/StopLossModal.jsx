@@ -86,6 +86,7 @@ export default function StopLossModal({ position, onClose, onSuccess, onError, a
       } else {
         // Mode Ordre Saxo reel
         const orders = []
+        const errors = []
 
         // Creer ordre Stop Loss (vente si prix descend)
         if (config.stopLossPercent > 0) {
@@ -94,7 +95,9 @@ export default function StopLossModal({ position, onClose, onSuccess, onError, a
             asset_type: position.asset_type || 'Stock',
             buy_sell: 'Sell',
             quantity: quantity,
-            order_type: config.trailingStop ? 'TrailingStop' : 'StopIfTraded',
+            // Utiliser "Stop" pour les ordres stop standard
+            // "TrailingStopIfTraded" pour trailing stop
+            order_type: config.trailingStop ? 'TrailingStopIfTraded' : 'Stop',
             price: stopLossPrice,
             account_key: accountKey
           }
@@ -124,28 +127,43 @@ export default function StopLossModal({ position, onClose, onSuccess, onError, a
         // Envoyer les ordres
         const results = []
         for (const { type, order } of orders) {
-          const res = await fetch(`${API_BASE}/saxo/orders`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(order)
-          })
+          try {
+            const res = await fetch(`${API_BASE}/saxo/orders`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(order)
+            })
 
-          if (!res.ok) {
-            const err = await res.json()
-            throw new Error(`Erreur ${type}: ${err.detail || 'Echec'}`)
+            if (!res.ok) {
+              const err = await res.json()
+              const errorDetail = err.detail || 'Echec'
+              errors.push(`${type}: ${errorDetail}`)
+              console.error(`Order ${type} failed:`, errorDetail)
+              // Continue avec les autres ordres
+            } else {
+              results.push(type)
+            }
+          } catch (e) {
+            errors.push(`${type}: ${e.message}`)
+            console.error(`Order ${type} exception:`, e)
           }
-
-          results.push(type)
         }
 
-        // Pass actual SL/TP prices and mode to parent callback
-        onSuccess?.(
-          `Ordres Saxo crees: ${results.join(', ')}`,
-          stopLossPrice,
-          takeProfitPrice,
-          'order'
-        )
-        onClose()
+        // Rapport des resultats
+        if (results.length > 0) {
+          const successMsg = `Ordres places: ${results.join(', ')}`
+          const errorMsg = errors.length > 0 ? `\n⚠️ Echecs: ${errors.join('; ')}` : ''
+          onSuccess?.(
+            successMsg + errorMsg,
+            stopLossPrice,
+            takeProfitPrice,
+            'order'
+          )
+          onClose()
+        } else if (errors.length > 0) {
+          // Tous les ordres ont echoue
+          throw new Error(`Erreurs: ${errors.join('; ')}`)
+        }
       }
 
     } catch (err) {

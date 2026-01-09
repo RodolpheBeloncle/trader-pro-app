@@ -1,10 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
-import { RefreshCw, Download, Plus, TrendingUp, ChevronDown, BarChart3, Coins, PieChart, Wallet, Settings } from 'lucide-react'
+import { RefreshCw, Download, Plus, TrendingUp, ChevronDown, BarChart3, Coins, PieChart, Wallet, Settings, BookOpen, Bell } from 'lucide-react'
 import { analyzeTicker, analyzeBatch, getMarkets, getMarketTickers, exportCSVFromData, searchTickers } from './api'
 import StockTable from './components/StockTable'
 import StockChart from './components/StockChart'
 import Filters from './components/Filters'
 import SaxoPortfolio from './components/SaxoPortfolio'
+import TradingJournal from './components/TradingJournal'
+import AlertsManager from './components/AlertsManager'
+import AlertSettings from './components/AlertSettings'
+import TradingModeSelector from './components/TradingModeSelector'
 import DataSourceToggle from './components/DataSourceToggle'
 import ProfileConfig from './components/ProfileConfig'
 
@@ -62,7 +66,9 @@ const TABS = [
   { id: 'stocks', label: 'Actions', icon: BarChart3, color: 'emerald' },
   { id: 'etfs', label: 'ETFs', icon: PieChart, color: 'blue' },
   { id: 'crypto', label: 'Crypto', icon: Coins, color: 'orange' },
-  { id: 'saxo', label: 'Mon Portfolio', icon: Wallet, color: 'purple' }
+  { id: 'saxo', label: 'Mon Portfolio', icon: Wallet, color: 'purple' },
+  { id: 'journal', label: 'Journal', icon: BookOpen, color: 'indigo' },
+  { id: 'alerts', label: 'Alertes', icon: Bell, color: 'yellow' }
 ]
 
 // Flatten API response to match frontend expectations
@@ -97,6 +103,7 @@ function App() {
   const [tickerToTrade, setTickerToTrade] = useState(null)
   const [showConfig, setShowConfig] = useState(false)
   const [oauthResult, setOauthResult] = useState(null) // Result from OAuth callback
+  const [alertSubTab, setAlertSubTab] = useState('price') // 'price' or 'technical'
 
   useEffect(() => {
     loadMarkets()
@@ -302,8 +309,9 @@ function App() {
               <TrendingUp className="w-10 h-10 text-emerald-500" />
               <h1 className="text-3xl font-bold">Stock Analyzer</h1>
             </div>
-            {/* Data Source Toggle + Settings */}
+            {/* Trading Mode + Data Source + Settings */}
             <div className="flex items-center gap-3">
+              <TradingModeSelector compact={true} />
               <DataSourceToggle compact={true} />
               <button
                 onClick={() => setShowConfig(true)}
@@ -362,6 +370,8 @@ function App() {
                         ? tab.id === 'stocks' ? 'bg-emerald-600 text-white'
                         : tab.id === 'etfs' ? 'bg-blue-600 text-white'
                         : tab.id === 'crypto' ? 'bg-orange-600 text-white'
+                        : tab.id === 'journal' ? 'bg-indigo-600 text-white'
+                        : tab.id === 'alerts' ? 'bg-yellow-600 text-white'
                         : 'bg-purple-600 text-white'
                         : 'bg-slate-700/50 text-slate-300 hover:bg-slate-600/50'
                     }`}
@@ -388,8 +398,51 @@ function App() {
               />
             )}
 
-            {/* Market presets for active tab (not for Saxo) */}
-            {activeTab !== 'saxo' && (
+            {/* Trading Journal Tab */}
+            {activeTab === 'journal' && (
+              <TradingJournal />
+            )}
+
+            {/* Alerts Manager Tab */}
+            {activeTab === 'alerts' && (
+              <div className="space-y-6">
+                {/* Sub-tabs for alerts */}
+                <div className="flex items-center gap-1 bg-slate-800/50 rounded-xl p-1 w-fit">
+                  <button
+                    onClick={() => setAlertSubTab('price')}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors ${
+                      alertSubTab === 'price'
+                        ? 'bg-yellow-600 text-white'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
+                    }`}
+                  >
+                    <Bell className="w-4 h-4" />
+                    Alertes Prix
+                  </button>
+                  <button
+                    onClick={() => setAlertSubTab('technical')}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors ${
+                      alertSubTab === 'technical'
+                        ? 'bg-yellow-600 text-white'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
+                    }`}
+                  >
+                    <Settings className="w-4 h-4" />
+                    Alertes Techniques
+                  </button>
+                </div>
+
+                {/* Content based on sub-tab */}
+                {alertSubTab === 'price' ? (
+                  <AlertsManager />
+                ) : (
+                  <AlertSettings />
+                )}
+              </div>
+            )}
+
+            {/* Market presets for active tab (not for Saxo/Journal/Alerts) */}
+            {activeTab !== 'saxo' && activeTab !== 'journal' && activeTab !== 'alerts' && (
               <>
                 <span className="text-sm text-slate-400 mb-2 block">
                   {activeTab === 'stocks' && 'Marchés Actions :'}
@@ -448,8 +501,8 @@ function App() {
             )}
           </div>
 
-          {/* Actions - only show when not on Saxo tab */}
-          {activeTab !== 'saxo' && (
+          {/* Actions - only show when not on Saxo/Journal/Alerts tab */}
+          {activeTab !== 'saxo' && activeTab !== 'journal' && activeTab !== 'alerts' && (
           <div className="flex flex-wrap items-center justify-between gap-4">
             <Filters filters={filters} onChange={setFilters} />
 
@@ -482,8 +535,8 @@ function App() {
           </div>
         )}
 
-        {/* Stats, Loading, Table, Chart - only show when not on Saxo tab */}
-        {activeTab !== 'saxo' && (
+        {/* Stats, Loading, Table, Chart - only show when not on Saxo/Journal/Alerts tab */}
+        {activeTab !== 'saxo' && activeTab !== 'journal' && activeTab !== 'alerts' && (
           <>
             <div className="flex items-center gap-4 mb-4">
               <span className="text-slate-400">

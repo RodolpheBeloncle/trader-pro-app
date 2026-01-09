@@ -632,11 +632,27 @@ class SaxoApiClient:
         """
         try:
             data = response.json()
+            logger.debug(f"Error response data: {data}")
+
+            # Format standard Saxo
             if "Message" in data:
-                return data["Message"]
+                return f"HTTP {response.status_code}: {data['Message']}"
+
+            # Format ErrorInfo (plus détaillé)
             if "ErrorInfo" in data:
-                return data["ErrorInfo"].get("Message", str(data))
-            return str(data)
+                error_info = data["ErrorInfo"]
+                msg = error_info.get("Message", "")
+                error_code = error_info.get("ErrorCode", "")
+                if error_code:
+                    return f"HTTP {response.status_code} ({error_code}): {msg}"
+                return f"HTTP {response.status_code}: {msg}"
+
+            # Format ErrorCode direct
+            if "ErrorCode" in data:
+                return f"HTTP {response.status_code} ({data['ErrorCode']}): {data.get('Message', 'Erreur inconnue')}"
+
+            # Fallback
+            return f"HTTP {response.status_code}: {str(data)[:200]}"
         except Exception:
             return f"HTTP {response.status_code}: {response.text[:200]}"
 

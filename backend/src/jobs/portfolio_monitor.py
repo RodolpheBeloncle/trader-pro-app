@@ -23,9 +23,11 @@ from datetime import datetime
 if TYPE_CHECKING:
     from apscheduler.schedulers.background import BackgroundScheduler
 
-from src.infrastructure.brokers.saxo.saxo_broker import SaxoBroker
+from src.infrastructure.brokers.saxo.saxo_auth import get_saxo_auth
+from src.infrastructure.brokers.saxo.saxo_api_client import SaxoApiClient
 from src.application.services.alert_service import AlertService
 from src.infrastructure.notifications.telegram_service import get_telegram_service
+from src.config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -50,15 +52,29 @@ async def monitor_portfolio_async() -> None:
     global _known_positions
 
     try:
-        broker = SaxoBroker()
+        # Verifier si authentifie via le systeme d'auth central
+        auth = get_saxo_auth()
+        token = auth.get_valid_token()
 
-        # Verifier si authentifie
-        if not await broker.is_authenticated():
+        if not token:
             logger.debug("Portfolio monitor: not authenticated, skipping")
             return
 
-        # Recuperer le portefeuille
-        portfolio = await broker.get_portfolio()
+        # Recuperer le portefeuille via l'API client
+        settings = get_settings()
+        api_client = SaxoApiClient(settings)
+
+        # Obtenir le client key
+        client_info = api_client.get_client_info(token.access_token)
+        client_key = client_info.get("ClientKey")
+
+        if not client_key:
+            logger.debug("Portfolio monitor: no client key, skipping")
+            return
+
+        # Recuperer les positions
+        positions = api_client.get_positions(token.access_token, client_key)
+        portfolio = {"positions": positions} if positions else None
 
         if not portfolio or "positions" not in portfolio:
             logger.debug("Portfolio monitor: no positions found")

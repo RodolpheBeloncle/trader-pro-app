@@ -6,6 +6,7 @@ et les transforme au format attendu par le moteur.
 """
 
 import logging
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -15,6 +16,9 @@ import yfinance as yf
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# Limite du cache pour eviter une consommation memoire excessive
+MAX_CACHE_ENTRIES = 50
 
 
 @dataclass
@@ -48,13 +52,14 @@ class BacktestDataLoader:
     Charge les donnees historiques pour le backtesting.
 
     Features:
-    - Cache des donnees
+    - Cache des donnees avec limite LRU
     - Support multi-timeframe
     - Validation des donnees
     """
 
-    def __init__(self):
-        self._cache: dict = {}
+    def __init__(self, max_cache_size: int = MAX_CACHE_ENTRIES):
+        self._cache: OrderedDict = OrderedDict()
+        self._max_cache_size = max_cache_size
 
     async def load(
         self,
@@ -78,6 +83,8 @@ class BacktestDataLoader:
         cache_key = f"{ticker}_{start_date}_{end_date}_{interval}"
 
         if cache_key in self._cache:
+            # Deplacer en fin pour comportement LRU
+            self._cache.move_to_end(cache_key)
             logger.debug(f"Using cached data for {ticker}")
             return self._cache[cache_key]
 
@@ -114,10 +121,15 @@ class BacktestDataLoader:
                 )
                 data.append(ohlcv)
 
-            # Mettre en cache
+            # Mettre en cache avec limite LRU
             self._cache[cache_key] = data
+            # Supprimer les anciennes entrees si on depasse la limite
+            while len(self._cache) > self._max_cache_size:
+                oldest_key = next(iter(self._cache))
+                del self._cache[oldest_key]
+                logger.debug(f"Cache LRU eviction: {oldest_key}")
 
-            logger.info(f"Loaded {len(data)} bars for {ticker}")
+            logger.info(f"Loaded {len(data)} bars for {ticker} (cache: {len(self._cache)}/{self._max_cache_size})")
             return data
 
         except Exception as e:

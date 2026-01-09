@@ -33,6 +33,51 @@ MAX_RETRIES = 3
 INITIAL_BACKOFF = 1.0  # secondes
 MAX_BACKOFF = 30.0  # secondes
 
+# Mapping Saxo exchange codes -> Yahoo Finance suffixes
+SAXO_TO_YAHOO_EXCHANGE = {
+    "XMIL": ".MI",      # Milan
+    "XETR": ".DE",      # Frankfurt/Xetra
+    "XPAR": ".PA",      # Paris
+    "XLON": ".L",       # London
+    "XAMS": ".AS",      # Amsterdam
+    "XBRU": ".BR",      # Brussels
+    "XLIS": ".LS",      # Lisbon
+    "XMAD": ".MC",      # Madrid
+    "XSTO": ".ST",      # Stockholm
+    "XHEL": ".HE",      # Helsinki
+    "XCSE": ".CO",      # Copenhagen
+    "XOSL": ".OL",      # Oslo
+    "XSWX": ".SW",      # Swiss
+    "XASX": ".AX",      # Australia
+    "XHKG": ".HK",      # Hong Kong
+    "XTKS": ".T",       # Tokyo
+    "XNAS": "",         # NASDAQ (US, pas de suffixe)
+    "XNYS": "",         # NYSE (US, pas de suffixe)
+    "ARCX": "",         # NYSE Arca (US, pas de suffixe)
+}
+
+
+def convert_saxo_to_yahoo_ticker(ticker: str) -> str:
+    """
+    Convertit un ticker format Saxo (SYMBOL:EXCHANGE) vers Yahoo Finance.
+
+    Examples:
+        "VUSA:XMIL" -> "VUSA.MI"
+        "AAPL:XNAS" -> "AAPL"
+        "AAPL" -> "AAPL" (inchangé)
+    """
+    if ":" not in ticker:
+        return ticker
+
+    parts = ticker.split(":")
+    if len(parts) != 2:
+        return ticker
+
+    symbol, exchange = parts
+    suffix = SAXO_TO_YAHOO_EXCHANGE.get(exchange.upper(), "")
+
+    return f"{symbol}{suffix}"
+
 
 class YahooPriceSource(PriceSource):
     """
@@ -254,11 +299,36 @@ class YahooPriceSource(PriceSource):
             logger.debug(f"Yahoo not available (rate limited), skipping {ticker}")
             return None
 
+        # Convertir le ticker Saxo vers Yahoo si nécessaire
+        yahoo_ticker = convert_saxo_to_yahoo_ticker(ticker)
+        if yahoo_ticker != ticker:
+            logger.debug(f"Converted ticker {ticker} -> {yahoo_ticker}")
+
         # Utiliser le cache si disponible et récent (moins de 5 secondes)
         cached = self._last_prices.get(ticker)
 
-        # Fetch avec retry
-        price = await self._fetch_with_retry(ticker)
+        # Fetch avec retry (utiliser le ticker Yahoo)
+        price = await self._fetch_with_retry(yahoo_ticker)
+
+        # Fallback: si le ticker converti échoue et qu'il y avait un suffixe exchange
+        # ATTENTION: Ne pas faire de fallback vers le symbole US si l'exchange est europeen
+        # car les devises ne correspondent pas (EUR vs USD)
+        if not price and ":" in ticker:
+            parts = ticker.split(":")
+            if len(parts) == 2:
+                base_symbol = parts[0].upper()
+                exchange = parts[1].upper()
+
+                # Exchanges europeens (EUR) - ne pas fallback vers US (USD)
+                european_exchanges = {"XMIL", "XPAR", "XETR", "XAMS", "XBRU", "XLIS", "XMAD"}
+
+                if exchange not in european_exchanges and base_symbol != yahoo_ticker:
+                    # Fallback OK pour exchanges non-europeens
+                    logger.info(f"Fallback: trying base symbol {base_symbol} instead of {yahoo_ticker}")
+                    price = await self._fetch_with_retry(base_symbol)
+                elif exchange in european_exchanges:
+                    # Pas de fallback pour eviter melange EUR/USD
+                    logger.warning(f"Skipping USD fallback for EUR position {ticker} - currency mismatch")
 
         if not price:
             return None

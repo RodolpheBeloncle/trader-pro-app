@@ -23,6 +23,8 @@ from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED, JobEvent
 from src.jobs.alert_checker import register_alert_checker
 from src.jobs.portfolio_monitor import register_portfolio_monitor
 from src.jobs.daily_summary import register_daily_summary
+from src.jobs.token_refresh import register_token_refresh_job
+from src.jobs.cleanup_jobs import register_cleanup_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +68,17 @@ def create_scheduler() -> BackgroundScheduler:
     # Job de resume journalier (tous les jours a 18h)
     register_daily_summary(scheduler)
 
+    # Job de refresh proactif des tokens Saxo (toutes les 10min, run au demarrage)
+    register_token_refresh_job(scheduler)
+
+    # Jobs de nettoyage et maintenance (news cleanup, WAL checkpoint, memory cleanup)
+    register_cleanup_jobs(scheduler)
+
     _scheduler = scheduler
     logger.info(
         "Scheduler created with jobs: "
-        "alert_checker (60s), portfolio_monitor (5min), daily_summary (18h00)"
+        "alert_checker (60s), portfolio_monitor (5min), daily_summary (18h00), "
+        "token_refresh (10min), cleanup_jobs (news 3am, WAL 6h, memory 4am)"
     )
 
     return scheduler
@@ -115,6 +124,63 @@ def stop_scheduler(scheduler: Optional[BackgroundScheduler] = None) -> None:
 def get_scheduler() -> Optional[BackgroundScheduler]:
     """Retourne l'instance globale du scheduler."""
     return _scheduler
+
+
+def update_alert_checker_interval(seconds: int) -> bool:
+    """
+    Met a jour l'intervalle du job de verification des alertes.
+
+    Args:
+        seconds: Nouvel intervalle en secondes
+
+    Returns:
+        True si mis a jour avec succes
+    """
+    global _scheduler
+
+    if _scheduler is None:
+        logger.warning("Cannot update interval: scheduler not initialized")
+        return False
+
+    try:
+        # Reschedule le job avec le nouvel intervalle
+        _scheduler.reschedule_job(
+            "alert_checker",
+            trigger="interval",
+            seconds=seconds,
+        )
+        logger.info(f"Alert checker interval updated to {seconds}s")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to update alert checker interval: {e}")
+        return False
+
+
+def get_job_info(job_id: str) -> Optional[dict]:
+    """
+    Retourne les informations sur un job.
+
+    Args:
+        job_id: ID du job
+
+    Returns:
+        Dict avec les infos ou None
+    """
+    global _scheduler
+
+    if _scheduler is None:
+        return None
+
+    job = _scheduler.get_job(job_id)
+    if job is None:
+        return None
+
+    return {
+        "id": job.id,
+        "name": job.name,
+        "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
+        "trigger": str(job.trigger),
+    }
 
 
 def _on_job_executed(event: JobEvent) -> None:

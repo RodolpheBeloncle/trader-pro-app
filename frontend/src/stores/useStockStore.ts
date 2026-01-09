@@ -24,9 +24,8 @@ import type {
   StockAnalysis,
   StockFilters,
   MarketPreset,
-  StockResult,
 } from '@/types/stock.types';
-import { DEFAULT_FILTERS, isStockAnalysis } from '@/types/stock.types';
+import { DEFAULT_FILTERS } from '@/types/stock.types';
 
 // =============================================================================
 // TYPES
@@ -229,7 +228,8 @@ export const useStockStore = create<StockStore>()(
             marketLoadState: {
               ...state.marketLoadState,
               [marketId]: {
-                ...state.marketLoadState[marketId],
+                loadedCount: state.marketLoadState[marketId]?.loadedCount ?? 0,
+                isLoading: state.marketLoadState[marketId]?.isLoading ?? false,
                 ...update,
               },
             },

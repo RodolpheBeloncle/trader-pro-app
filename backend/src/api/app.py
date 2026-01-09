@@ -289,9 +289,18 @@ def configure_lifecycle(app: FastAPI) -> None:
             ws_manager = get_ws_manager()
             price_streamer = get_hybrid_streamer(ws_manager)
             await price_streamer.start()
+            print(f"[STREAMER] Started - running: {price_streamer.is_running}, sources: {list(price_streamer._sources.keys())}", flush=True)
             logger.info("Hybrid price streamer started")
         except Exception as e:
+            print(f"[STREAMER] Failed to start: {e}", flush=True)
             logger.error(f"Failed to start price streamer: {e}")
+
+        # Executer le nettoyage au demarrage (news cache, WAL checkpoint)
+        try:
+            from src.jobs.cleanup_jobs import run_startup_cleanup_async
+            await run_startup_cleanup_async()
+        except Exception as e:
+            logger.error(f"Startup cleanup failed (non-blocking): {e}")
 
         logger.info("Application startup complete")
 

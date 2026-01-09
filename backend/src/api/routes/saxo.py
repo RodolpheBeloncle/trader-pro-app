@@ -93,6 +93,7 @@ class OrderRequest(BaseModel):
     quantity: int = Field(..., gt=0)
     order_type: str = Field(default="Market")
     price: Optional[float] = None
+    trailing_distance: Optional[float] = Field(default=None, description="Distance pour trailing stop (%)")
     account_key: str
 
 
@@ -247,6 +248,95 @@ async def disconnect():
     auth = get_saxo_auth()
     auth.disconnect()
     return {"success": True, "message": "Deconnecte"}
+
+
+@router.post("/refresh-token")
+async def force_refresh_token():
+    """
+    Force le rafraichissement du token Saxo.
+
+    Utile quand le token est proche de l'expiration et que vous voulez
+    le rafraichir manuellement sans attendre le job automatique.
+
+    Returns:
+        Statut du refresh avec le nouveau temps d'expiration
+    """
+    from src.jobs.token_refresh import force_refresh_token as do_refresh
+
+    result = do_refresh()
+
+    if not result["success"]:
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("error", "Refresh failed")
+        )
+
+    return {
+        "success": True,
+        "environment": result["environment"],
+        "expires_in_seconds": result["expires_in_seconds"],
+        "expires_in_minutes": result["expires_in_minutes"],
+        "message": f"Token rafraichi avec succes, expire dans {result['expires_in_minutes']} minutes"
+    }
+
+
+@router.get("/token-info")
+async def get_token_info():
+    """
+    Retourne les informations detaillees sur le token actuel.
+
+    Utile pour le debugging et pour voir quand le token expire.
+    """
+    settings = get_settings()
+    auth = get_saxo_auth(settings)
+
+    if not auth.is_configured:
+        return {
+            "configured": False,
+            "message": "Saxo non configure"
+        }
+
+    token = auth.token_manager.get(auth.environment)
+
+    if not token:
+        return {
+            "configured": True,
+            "connected": False,
+            "message": "Aucun token trouve"
+        }
+
+    expires_in = token.expires_in_seconds
+    expires_at = token.expires_at.isoformat() if token.expires_at else None
+
+    return {
+        "configured": True,
+        "connected": True,
+        "environment": token.environment,
+        "expires_at": expires_at,
+        "expires_in_seconds": expires_in,
+        "expires_in_minutes": expires_in // 60,
+        "has_refresh_token": bool(token.refresh_token),
+        "is_expired": token.is_expired,
+        "message": f"Token valide, expire dans {expires_in // 60} minutes"
+    }
+
+
+@router.get("/token-health")
+async def get_token_health():
+    """
+    Retourne l'etat de sante complet du systeme de tokens.
+
+    Inclut:
+    - Statut du token (valid, expiring_soon, expired, missing)
+    - Temps restant avant expiration (access ET refresh token)
+    - Statistiques du service de refresh (tentatives, echecs, taux de succes)
+    - Prochain refresh prevu
+
+    Utile pour le monitoring et le debugging.
+    """
+    from src.jobs.token_refresh import get_token_health as do_get_health
+
+    return do_get_health()
 
 
 # =============================================================================
@@ -558,6 +648,133 @@ async def search_instruments(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# =============================================================================
+# ROUTES - ANALYSE D'INSTRUMENT (PRE-ACHAT)
+# =============================================================================
+
+@router.get("/instruments/{symbol}/analyze")
+async def analyze_instrument(symbol: str):
+    """
+    Analyse complete d'un instrument AVANT achat.
+
+    Fournit toutes les informations necessaires pour prendre
+    une decision d'achat eclairee:
+
+    - **Info**: Nom, secteur, capitalisation
+    - **Prix**: Cours actuel, variation, volume, plus haut/bas 52 semaines
+    - **Technique**: RSI, MACD, Bollinger, tendance, supports/resistances
+    - **Sentiment**: Score de sentiment, news recentes
+    - **Niveaux de trading**: SL/TP suggeres, ratio risk/reward
+    - **Recommandation**: BUY/WAIT/AVOID avec niveau de confiance
+
+    Args:
+        symbol: Symbole de l'instrument (ex: AAPL, MSFT, MC.PA)
+
+    Returns:
+        Analyse complete avec recommandation d'achat
+    """
+    from src.application.services.instrument_analysis_service import (
+        get_instrument_analysis_service,
+    )
+
+    try:
+        service = get_instrument_analysis_service()
+        analysis = await service.analyze_instrument(symbol.upper())
+
+        return analysis.to_dict()
+
+    except ValueError as e:
+        logger.warning(f"Analyse impossible pour {symbol}: {e}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Impossible d'analyser {symbol}: {str(e)}"
+        )
+    except Exception as e:
+        logger.exception(f"Erreur analyse instrument {symbol}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur lors de l'analyse: {str(e)}"
+        )
+
+
+@router.get("/instruments/compare")
+async def compare_instruments(symbols: str = Query(..., description="Symboles separes par des virgules")):
+    """
+    Compare plusieurs instruments pour aider au choix.
+
+    Args:
+        symbols: Liste de symboles separes par des virgules (ex: "AAPL,MSFT,GOOGL")
+
+    Returns:
+        Comparaison des instruments avec scores et rankings
+    """
+    import asyncio
+    from src.application.services.instrument_analysis_service import (
+        get_instrument_analysis_service,
+    )
+
+    symbol_list = [s.strip().upper() for s in symbols.split(",")]
+
+    if len(symbol_list) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Au moins 2 symboles requis pour la comparaison"
+        )
+
+    if len(symbol_list) > 5:
+        raise HTTPException(
+            status_code=400,
+            detail="Maximum 5 symboles pour la comparaison"
+        )
+
+    try:
+        service = get_instrument_analysis_service()
+
+        # Analyser tous les instruments en parallele
+        tasks = [service.analyze_instrument(symbol) for symbol in symbol_list]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        comparisons = []
+        errors = []
+
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                errors.append({"symbol": symbol_list[i], "error": str(result)})
+            else:
+                comparisons.append({
+                    "symbol": result.info.symbol,
+                    "name": result.info.name,
+                    "price": result.price.current_price,
+                    "change_percent": result.price.change_percent,
+                    "rsi": result.technical.rsi,
+                    "trend": result.technical.trend,
+                    "sentiment": result.sentiment.sentiment_label,
+                    "recommendation": result.recommendation.action,
+                    "confidence": result.recommendation.confidence,
+                    "rating": result.recommendation.rating,
+                    "pros_count": len(result.recommendation.pros),
+                    "cons_count": len(result.recommendation.cons),
+                })
+
+        # Trier par rating puis confidence
+        comparisons.sort(key=lambda x: (x["rating"], x["confidence"]), reverse=True)
+
+        # Ajouter le ranking
+        for i, comp in enumerate(comparisons):
+            comp["rank"] = i + 1
+
+        return {
+            "comparisons": comparisons,
+            "best_pick": comparisons[0]["symbol"] if comparisons else None,
+            "errors": errors if errors else None,
+            "analyzed_at": datetime.now().isoformat(),
+        }
+
+    except Exception as e:
+        logger.exception("Erreur comparaison instruments")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/orders", response_model=OrderResponse)
 async def place_order(order: OrderRequest):
     """Place un ordre."""
@@ -565,20 +782,44 @@ async def place_order(order: OrderRequest):
     client = get_api_client()
 
     try:
+        # Déterminer la durée selon le type d'ordre
+        # Market orders: DayOrder (GTC not allowed)
+        # Limit orders: GoodTillCancel
+        # Stop orders: DayOrder (default selon Saxo docs)
+        if order.order_type == "Market":
+            duration_type = "DayOrder"
+        elif order.order_type in ("Stop", "StopIfTraded", "StopLimit", "TrailingStop", "TrailingStopIfTraded"):
+            duration_type = "DayOrder"  # Stop orders use DayOrder by default
+        else:
+            duration_type = "GoodTillCancel"  # Limit orders can use GTC
+
         order_data = {
             "AccountKey": order.account_key,
             "Uic": int(order.symbol),
             "AssetType": order.asset_type,
-            "Amount": order.quantity,
+            "Amount": float(order.quantity),  # Saxo attend un float
             "BuySell": order.buy_sell,
             "OrderType": order.order_type,
-            "OrderDuration": {"DurationType": "DayOrder"},
+            "OrderDuration": {"DurationType": duration_type},
             "ManualOrder": True
         }
 
+        # Gestion du prix selon le type d'ordre
         if order.order_type == "Limit" and order.price:
-            order_data["OrderPrice"] = order.price
+            order_data["OrderPrice"] = float(order.price)
 
+        elif order.order_type in ("StopIfTraded", "Stop", "StopLimit") and order.price:
+            # Pour les ordres Stop, OrderPrice est le prix de déclenchement
+            order_data["OrderPrice"] = float(order.price)
+
+        elif order.order_type in ("TrailingStop", "TrailingStopIfTraded") and order.price:
+            # Trailing stop nécessite OrderPrice ET une distance
+            order_data["OrderPrice"] = float(order.price)
+            if order.trailing_distance:
+                order_data["TrailingStopDistanceToMarket"] = float(order.trailing_distance)
+                order_data["TrailingStopStep"] = 0.01
+
+        logger.info(f"Placing order: {order_data}")
         result = client.place_order(token.access_token, order_data)
 
         return OrderResponse(

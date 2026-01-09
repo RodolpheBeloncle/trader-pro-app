@@ -153,6 +153,15 @@ class YahooFinanceProvider(StockDataProvider):
             # Récupération des données historiques
             hist = yf_ticker.history(start=start_date, end=end_date)
 
+            # Fallback: si le ticker converti échoue et qu'il y avait un suffixe exchange,
+            # essayer avec le symbole de base (ex: NVDA.MI échoue -> essayer NVDA)
+            if hist.empty and ":" in ticker.value:
+                base_symbol = ticker.value.split(":")[0].upper()
+                if base_symbol != yahoo_ticker:
+                    logger.info(f"Fallback: trying base symbol {base_symbol} instead of {yahoo_ticker}")
+                    yf_ticker = yf.Ticker(base_symbol)
+                    hist = yf_ticker.history(start=start_date, end=end_date)
+
             if hist.empty:
                 raise TickerNotFoundError(ticker.value)
 

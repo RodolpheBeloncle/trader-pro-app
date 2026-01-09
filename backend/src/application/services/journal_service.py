@@ -207,10 +207,11 @@ class JournalService:
         trade = await self._trade_repo.activate(trade_id, entry_price)
 
         if trade and notify:
+            # Utiliser le prix du trade (qui a été mis à jour par activate)
             await self._telegram.send_trade_opened(
                 ticker=trade.ticker,
                 direction=trade.direction.value,
-                entry_price=entry_price,
+                entry_price=trade.entry_price,  # Utiliser le prix du trade, pas le paramètre
                 stop_loss=trade.stop_loss,
                 take_profit=trade.take_profit,
                 position_size=trade.position_size,
@@ -258,6 +259,20 @@ class JournalService:
     async def cancel_trade(self, trade_id: str) -> Optional[Trade]:
         """Annule un trade."""
         return await self._trade_repo.cancel(trade_id)
+
+    async def delete_trade(self, trade_id: str) -> bool:
+        """
+        Supprime un trade définitivement.
+
+        Args:
+            trade_id: ID du trade à supprimer
+
+        Returns:
+            True si supprimé, False sinon
+        """
+        # Supprimer aussi l'entrée de journal associée si elle existe
+        await self._journal_repo.delete_by_trade_id(trade_id)
+        return await self._trade_repo.delete(trade_id)
 
     async def update_trade(
         self,

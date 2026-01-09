@@ -275,6 +275,25 @@ class JournalRepository(BaseRepository[JournalEntry]):
             return None
         return self._row_to_entity(row)
 
+    async def delete_by_trade_id(self, trade_id: str) -> bool:
+        """
+        Supprime l'entrée de journal associée à un trade.
+
+        Args:
+            trade_id: ID du trade
+
+        Returns:
+            True si supprimé, False sinon
+        """
+        result = await self.db.execute(
+            f"DELETE FROM {self.table_name} WHERE trade_id = ?",
+            (trade_id,)
+        )
+        deleted = result.rowcount > 0 if hasattr(result, 'rowcount') else True
+        if deleted:
+            logger.info(f"Entrée de journal supprimée pour trade {trade_id}")
+        return deleted
+
     async def add_post_trade_analysis(
         self,
         trade_id: str,

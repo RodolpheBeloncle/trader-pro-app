@@ -37,10 +37,15 @@ async def check_alerts_async() -> None:
 
     Verifie:
     1. Alertes de prix classiques (price_above, price_below, etc.)
-    2. Alertes techniques (RSI, MACD, Bollinger Bands)
+    2. Alertes techniques (RSI, MACD, Bollinger Bands) - si activees
+
+    Respecte la configuration des alertes techniques:
+    - enabled: activation globale
+    - trading_hours_only: heures de trading
+    - cooldown: evite les doublons
     """
     try:
-        # 1. Verification des alertes de prix classiques
+        # 1. Verification des alertes de prix classiques (toujours active)
         service = AlertService()
         result = await service.check_all_alerts()
 
@@ -57,17 +62,58 @@ async def check_alerts_async() -> None:
         if retry_count > 0:
             logger.info(f"Retried {retry_count} failed notification(s)")
 
-        # 2. Verification des alertes techniques (RSI, MACD, Bollinger)
+        # 2. Verification des alertes techniques (si activees)
         try:
+            from src.application.services.alert_config_service import get_alert_config_service
+
+            config_service = get_alert_config_service()
+
+            # Verifier si les alertes techniques sont activees
+            if not config_service.should_scan_now():
+                logger.debug("Technical alerts: skipped (disabled or outside trading hours)")
+                return
+
+            config = config_service.config
             technical_service = get_technical_alert_service()
-            signals = await technical_service.check_portfolio_signals()
+
+            # Passer la configuration au service technique
+            signals = await technical_service.check_portfolio_signals(
+                rsi_enabled=config.rsi_enabled,
+                rsi_overbought=config.rsi_overbought,
+                rsi_oversold=config.rsi_oversold,
+                macd_enabled=config.macd_enabled,
+                bollinger_enabled=config.bollinger_enabled,
+            )
 
             if signals:
-                sent_count = await technical_service.notify_signals(signals)
-                logger.info(
-                    f"Technical alerts: {len(signals)} signals detected, "
-                    f"{sent_count} notifications sent"
-                )
+                # Filtrer les signaux en cooldown
+                filtered_signals = []
+                for signal in signals:
+                    if not config_service.is_in_cooldown(signal.ticker, signal.signal_type):
+                        filtered_signals.append(signal)
+                        # Enregistrer dans l'historique
+                        config_service.add_signal(
+                            ticker=signal.ticker,
+                            signal_type=signal.signal_type,
+                            indicator_value=signal.indicator_value,
+                            price=signal.current_price,
+                            severity=signal.severity,
+                        )
+
+                if filtered_signals:
+                    # Filtrer par severite si configure
+                    if config.notify_only_high_severity:
+                        filtered_signals = [s for s in filtered_signals if s.severity == "high"]
+
+                    if filtered_signals and config.notify_telegram:
+                        sent_count = await technical_service.notify_signals(filtered_signals)
+                        # Mettre a jour l'historique avec le statut notifie
+                        logger.info(
+                            f"Technical alerts: {len(filtered_signals)} signals, "
+                            f"{sent_count} notifications sent"
+                        )
+                    else:
+                        logger.debug(f"Technical alerts: {len(signals)} signals detected (filtered or notifications disabled)")
             else:
                 logger.debug("Technical alerts: no signals detected")
 

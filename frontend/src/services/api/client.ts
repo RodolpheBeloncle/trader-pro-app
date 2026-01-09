@@ -76,13 +76,6 @@ export interface ApiError {
   status: number;
 }
 
-/**
- * Type guard pour les erreurs Axios.
- */
-function isAxiosError(error: unknown): error is AxiosError<ApiError> {
-  return axios.isAxiosError(error);
-}
-
 // =============================================================================
 // INTERCEPTEURS
 // =============================================================================

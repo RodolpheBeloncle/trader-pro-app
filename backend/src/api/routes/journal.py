@@ -66,7 +66,8 @@ class UpdateTradeRequest(BaseModel):
 
 class ActivateTradeRequest(BaseModel):
     """Requête d'activation de trade."""
-    entry_price: float = Field(..., gt=0)
+    entry_price: Optional[float] = Field(None, gt=0, description="Prix d'entrée réel")
+    actual_entry_price: Optional[float] = Field(None, gt=0, description="Alias pour entry_price")
 
 
 class CloseTradeRequest(BaseModel):
@@ -277,10 +278,14 @@ async def activate_trade(trade_id: str, request: ActivateTradeRequest):
     Active un trade planifié.
 
     Passe le trade de "planned" à "active" avec le prix d'entrée réel.
+    Si aucun prix n'est fourni, utilise le prix d'entrée planifié.
     """
     service = get_journal_service()
 
-    trade = await service.activate_trade(trade_id, request.entry_price)
+    # Utiliser entry_price ou actual_entry_price (alias du frontend)
+    actual_price = request.entry_price or request.actual_entry_price
+
+    trade = await service.activate_trade(trade_id, actual_price)
 
     if trade is None:
         raise HTTPException(
@@ -327,6 +332,23 @@ async def cancel_trade(trade_id: str):
         raise HTTPException(status_code=404, detail="Trade non trouvé")
 
     return TradeResponse.from_entity(trade)
+
+
+@router.delete("/trades/{trade_id}", status_code=204)
+async def delete_trade(trade_id: str):
+    """
+    Supprime définitivement un trade et son entrée de journal associée.
+
+    Cette action est irréversible.
+    """
+    service = get_journal_service()
+
+    deleted = await service.delete_trade(trade_id)
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Trade non trouvé")
+
+    return None
 
 
 # =============================================================================

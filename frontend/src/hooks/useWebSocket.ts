@@ -198,10 +198,9 @@ export function useTickerPrice(ticker: string): PriceData | null {
   });
 
   useEffect(() => {
-    if (ticker) {
-      subscribe(ticker);
-      return () => unsubscribe(ticker);
-    }
+    if (!ticker) return;
+    subscribe(ticker);
+    return () => unsubscribe(ticker);
   }, [ticker, subscribe, unsubscribe]);
 
   return prices[ticker.toUpperCase()] || null;
