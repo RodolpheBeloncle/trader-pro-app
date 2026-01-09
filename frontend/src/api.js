@@ -248,6 +248,43 @@ export async function cancelOTP(action) {
 }
 
 // =============================================================================
+// FINNHUB CONFIGURATION
+// =============================================================================
+
+export async function setupFinnhubInitial(apiKey) {
+  const response = await fetch(`${API_BASE}/config/finnhub/setup?api_key=${encodeURIComponent(apiKey)}`, {
+    method: 'POST'
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(extractErrorMessage(error, 'Failed to setup Finnhub'));
+  }
+  return response.json();
+}
+
+export async function deleteFinnhub() {
+  const response = await fetch(`${API_BASE}/config/finnhub`, {
+    method: 'DELETE'
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(extractErrorMessage(error, 'Failed to delete Finnhub'));
+  }
+  return response.json();
+}
+
+export async function testFinnhubConnection() {
+  const response = await fetch(`${API_BASE}/config/finnhub/test`, {
+    method: 'POST'
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(extractErrorMessage(error, 'Failed to test Finnhub'));
+  }
+  return response.json();
+}
+
+// =============================================================================
 // CSV EXPORT
 // =============================================================================
 

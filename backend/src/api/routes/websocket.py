@@ -1,7 +1,12 @@
 """
 Routes WebSocket pour les prix en temps reel.
 
-Endpoint:
+Endpoints REST:
+- GET /streaming/modes - Liste des modes de trading disponibles
+- GET /streaming/status - Statut actuel du streaming
+- POST /streaming/mode - Changer le mode de trading
+
+Endpoint WebSocket:
 - GET /ws/prices - Connexion WebSocket pour les prix
 
 PROTOCOLE:
@@ -26,13 +31,178 @@ import json
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
+from pydantic import BaseModel
 
 from src.infrastructure.websocket.ws_manager import get_ws_manager
+from src.infrastructure.websocket.hybrid_streamer import get_hybrid_streamer
+from src.infrastructure.websocket.trading_mode import (
+    TradingMode,
+    get_all_modes,
+    get_current_mode,
+    get_current_config,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ws", tags=["websocket"])
+
+
+# =============================================================================
+# REST ENDPOINTS - Trading Mode Configuration
+# =============================================================================
+
+class SetModeRequest(BaseModel):
+    """Requete pour changer le mode de trading."""
+    mode: str  # "long_term", "swing", "scalping"
+
+
+@router.get("/streaming/modes")
+async def get_trading_modes():
+    """
+    Retourne la liste des modes de trading disponibles.
+
+    Returns:
+        Liste des modes avec leurs configurations
+    """
+    return {
+        "modes": get_all_modes(),
+        "current_mode": get_current_mode().value,
+    }
+
+
+@router.get("/streaming/status")
+async def get_streaming_status():
+    """
+    Retourne le statut actuel du streaming.
+
+    Returns:
+        Statut du streamer avec mode, sources, etc.
+    """
+    try:
+        streamer = get_hybrid_streamer()
+        stats = streamer.get_stats()
+        config = get_current_config()
+
+        # Verifier la disponibilite des sources
+        source_status = await _get_source_availability_async()
+
+        return {
+            "status": "running" if stats.get("running") else "stopped",
+            "trading_mode": config.mode.value,
+            "trading_mode_name": config.display_name,
+            "poll_interval": stats.get("poll_interval"),
+            "use_websocket": config.use_websocket,
+            "sources": stats.get("sources", []),
+            "realtime_sources": stats.get("realtime_sources", []),
+            "subscribed_count": stats.get("subscribed_count", 0),
+            "source_availability": source_status,
+        }
+    except Exception as e:
+        logger.error(f"Error getting streaming status: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+        }
+
+
+async def _get_source_availability_async() -> dict:
+    """Verifie la disponibilite de chaque source (async)."""
+    from src.config.settings import settings
+    from src.infrastructure.persistence.token_store import get_token_store
+
+    result = {
+        "yahoo": {"available": True, "reason": "Toujours disponible"},
+        "finnhub": {"available": False, "reason": ""},
+        "saxo": {"available": False, "reason": ""},
+    }
+
+    # Finnhub
+    if settings.is_finnhub_configured:
+        result["finnhub"]["available"] = True
+        result["finnhub"]["reason"] = "Cle API configuree"
+    else:
+        result["finnhub"]["reason"] = "Cle API non configuree (FINNHUB_API_KEY)"
+
+    # Saxo
+    try:
+        token_store = get_token_store()
+        token = await token_store.get_token("default", "saxo")
+        if token and not token.is_expired:
+            result["saxo"]["available"] = True
+            result["saxo"]["reason"] = "Token OAuth valide"
+        else:
+            result["saxo"]["reason"] = "Non connecte ou token expire"
+    except Exception as e:
+        result["saxo"]["reason"] = f"Erreur: {str(e)}"
+
+    return result
+
+
+def _get_source_availability() -> dict:
+    """Version sync pour les contextes non-async."""
+    from src.config.settings import settings
+
+    result = {
+        "yahoo": {"available": True, "reason": "Toujours disponible"},
+        "finnhub": {"available": False, "reason": ""},
+        "saxo": {"available": False, "reason": "Verifier onglet Mon Portfolio"},
+    }
+
+    # Finnhub
+    if settings.is_finnhub_configured:
+        result["finnhub"]["available"] = True
+        result["finnhub"]["reason"] = "Cle API configuree"
+    else:
+        result["finnhub"]["reason"] = "Cle API non configuree (FINNHUB_API_KEY)"
+
+    return result
+
+
+@router.post("/streaming/mode")
+async def set_trading_mode(request: SetModeRequest):
+    """
+    Change le mode de trading.
+
+    Args:
+        request: Mode de trading souhaite
+
+    Returns:
+        Nouvelle configuration du streamer
+    """
+    try:
+        # Valider le mode
+        try:
+            mode = TradingMode(request.mode)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Mode invalide: {request.mode}. "
+                       f"Valeurs possibles: long_term, swing, scalping"
+            )
+
+        # Changer le mode
+        streamer = get_hybrid_streamer()
+        result = await streamer.set_trading_mode(mode)
+
+        logger.info(f"Trading mode changed to: {mode.value}")
+
+        return {
+            "success": True,
+            "message": f"Mode change en {result['display_name']}",
+            **result,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error changing trading mode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# WEBSOCKET ENDPOINT
+# =============================================================================
 
 
 @router.websocket("/prices")

@@ -6,6 +6,8 @@ Features:
 - Fallback automatique si une source echoue
 - Support pour tickers prioritaires (rafraichissement plus rapide)
 - Gestion automatique des abonnements
+- Support des modes de trading (long_term, swing, scalping)
+- Integration Finnhub et Saxo pour temps reel
 """
 
 import logging
@@ -21,6 +23,13 @@ from src.infrastructure.websocket.price_source import (
     PriceCallback,
 )
 from src.infrastructure.websocket.yahoo_source import YahooPriceSource
+from src.infrastructure.websocket.trading_mode import (
+    TradingMode,
+    TradingModeConfig,
+    get_current_config,
+    get_mode_config,
+    set_current_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +47,18 @@ class HybridPriceStreamer:
     """
     Streamer de prix hybride multi-sources.
 
-    Combine Yahoo Finance (polling) avec possibilite d'ajouter
-    Saxo WebSocket quand authentifie.
+    Combine Yahoo Finance (polling) avec Finnhub et Saxo WebSocket
+    pour le temps reel.
+
+    Supporte 3 modes de trading:
+    - LONG_TERM: Polling 60s (Yahoo)
+    - SWING: Polling 10s (Yahoo/Finnhub)
+    - SCALPING: WebSocket temps reel (Finnhub/Saxo)
 
     Attributes:
         manager: WebSocketManager pour broadcast
         sources: Liste des sources de prix disponibles
+        trading_mode: Mode de trading actuel
     """
 
     def __init__(
@@ -51,20 +66,29 @@ class HybridPriceStreamer:
         manager: WebSocketManager,
         poll_interval: float = 10.0,
         priority_interval: float = 5.0,
+        trading_mode: Optional[TradingMode] = None,
     ):
         """
         Args:
             manager: WebSocketManager pour broadcast
             poll_interval: Intervalle normal de polling (secondes)
             priority_interval: Intervalle pour tickers prioritaires
+            trading_mode: Mode de trading initial (None = utilise config globale)
         """
         self.manager = manager
-        self._poll_interval = poll_interval
-        self._priority_interval = priority_interval
+
+        # Mode de trading
+        self._trading_mode = trading_mode or TradingMode.LONG_TERM
+        self._mode_config = get_mode_config(self._trading_mode)
+
+        # Appliquer les intervalles du mode
+        self._poll_interval = self._mode_config.poll_interval or poll_interval
+        self._priority_interval = self._mode_config.priority_interval or priority_interval
 
         # Sources de prix
         self._sources: Dict[str, PriceSource] = {}
         self._default_source: Optional[PriceSource] = None
+        self._realtime_sources: Dict[str, PriceSource] = {}  # Sources WebSocket
 
         # Configuration des tickers
         self._ticker_configs: Dict[str, TickerConfig] = {}
@@ -74,16 +98,145 @@ class HybridPriceStreamer:
         self._poll_task: Optional[asyncio.Task] = None
         self._priority_task: Optional[asyncio.Task] = None
 
-        # Initialiser la source Yahoo par defaut
+        # Initialiser les sources
         self._init_default_sources()
 
-        logger.info(f"HybridPriceStreamer initialized")
+        logger.info(
+            f"HybridPriceStreamer initialized (mode={self._trading_mode.value}, "
+            f"poll={self._poll_interval}s)"
+        )
 
     def _init_default_sources(self) -> None:
         """Initialise les sources par defaut."""
         yahoo = YahooPriceSource(poll_interval=self._poll_interval)
         self.register_source(yahoo)
         self._default_source = yahoo
+
+        # Initialiser les sources temps reel si disponibles
+        self._init_realtime_sources()
+
+    def _init_realtime_sources(self) -> None:
+        """Initialise les sources temps reel (Finnhub, Saxo)."""
+        # Finnhub (si cle API configuree)
+        try:
+            from src.infrastructure.websocket.finnhub_source import get_finnhub_source
+            from src.application.services.app_config_service import get_app_config_service
+
+            config_service = get_app_config_service()
+            is_configured = config_service.is_finnhub_configured()
+
+            logger.info(f"Finnhub configured: {is_configured}")
+
+            if is_configured:
+                # Mettre a jour la cle dans la source si necessaire
+                api_key = config_service.get_finnhub_api_key()
+                finnhub = get_finnhub_source()
+                if api_key:
+                    finnhub._api_key = api_key
+                self.register_source(finnhub)
+                self._realtime_sources["finnhub"] = finnhub
+                logger.info("Finnhub realtime source registered")
+            else:
+                logger.warning("Finnhub not configured - set FINNHUB_API_KEY in .env or via UI")
+        except ImportError as e:
+            logger.warning(f"Finnhub source import error: {e}")
+        except Exception as e:
+            logger.exception(f"Failed to init Finnhub source: {e}")
+
+        # Saxo Streaming (toujours enregistre, disponibilite verifiee a l'usage)
+        try:
+            from src.infrastructure.websocket.saxo_streaming_source import get_saxo_streaming_source
+            saxo = get_saxo_streaming_source()
+            self.register_source(saxo)
+            self._realtime_sources["saxo"] = saxo
+            logger.info("Saxo streaming source registered")
+        except ImportError as e:
+            logger.warning(f"Saxo streaming source import error: {e}")
+        except Exception as e:
+            logger.exception(f"Failed to init Saxo streaming source: {e}")
+
+    async def set_trading_mode(self, mode: TradingMode) -> Dict[str, Any]:
+        """
+        Change le mode de trading.
+
+        Cela reconfigure les intervalles de polling et active/desactive
+        les sources temps reel selon le mode.
+
+        Args:
+            mode: Nouveau mode de trading
+
+        Returns:
+            Dict avec la nouvelle configuration
+        """
+        old_mode = self._trading_mode
+        self._trading_mode = mode
+        self._mode_config = get_mode_config(mode)
+
+        # Mettre a jour la config globale
+        set_current_mode(mode)
+
+        logger.info(f"Trading mode changed: {old_mode.value} -> {mode.value}")
+
+        # Mettre a jour les intervalles
+        self._poll_interval = self._mode_config.poll_interval or 60.0
+        self._priority_interval = self._mode_config.priority_interval or 30.0
+
+        # Redemarrer si en cours d'execution
+        was_running = self._running
+        if was_running:
+            await self.stop()
+
+        # Gerer les sources temps reel
+        if self._mode_config.use_websocket:
+            # Activer les sources temps reel
+            await self._activate_realtime_sources()
+        else:
+            # Desactiver les sources temps reel
+            await self._deactivate_realtime_sources()
+
+        # Redemarrer
+        if was_running:
+            await self.start()
+
+        return {
+            "mode": mode.value,
+            "display_name": self._mode_config.display_name,
+            "poll_interval": self._poll_interval,
+            "use_websocket": self._mode_config.use_websocket,
+            "sources": list(self._sources.keys()),
+        }
+
+    async def _activate_realtime_sources(self) -> None:
+        """Active les sources temps reel pour le mode scalping."""
+        for name, source in self._realtime_sources.items():
+            if source.is_realtime:
+                try:
+                    if hasattr(source, 'connect'):
+                        await source.connect()
+                        logger.info(f"Activated realtime source: {name}")
+                except Exception as e:
+                    logger.warning(f"Failed to activate {name}: {e}")
+
+    async def _deactivate_realtime_sources(self) -> None:
+        """Desactive les sources temps reel."""
+        for name, source in self._realtime_sources.items():
+            if source.is_realtime:
+                try:
+                    if hasattr(source, 'disconnect'):
+                        await source.disconnect()
+                        logger.info(f"Deactivated realtime source: {name}")
+                except Exception as e:
+                    logger.warning(f"Failed to deactivate {name}: {e}")
+
+    @property
+    def trading_mode(self) -> TradingMode:
+        """Retourne le mode de trading actuel."""
+        return self._trading_mode
+
+    @property
+    def mode_config(self) -> TradingModeConfig:
+        """Retourne la configuration du mode actuel."""
+        return self._mode_config
 
     def register_source(self, source: PriceSource) -> None:
         """
@@ -285,7 +438,11 @@ class HybridPriceStreamer:
         """Retourne des statistiques sur le streamer."""
         return {
             "running": self._running,
+            "trading_mode": self._trading_mode.value,
+            "trading_mode_name": self._mode_config.display_name,
+            "use_websocket": self._mode_config.use_websocket,
             "sources": list(self._sources.keys()),
+            "realtime_sources": list(self._realtime_sources.keys()),
             "default_source": self._default_source.source_name if self._default_source else None,
             "subscribed_count": len(self._ticker_configs),
             "priority_tickers": [

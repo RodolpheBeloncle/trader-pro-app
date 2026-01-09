@@ -542,3 +542,102 @@ async def _send_config_notification(title: str, details: str) -> None:
         logger.error(f"Erreur notification config: {e}")
     finally:
         await telegram.close()
+
+
+# ==================== FINNHUB CONFIGURATION ====================
+
+
+class SetFinnhubKeyRequest(BaseModel):
+    """Requete pour configurer la cle Finnhub."""
+    api_key: str = Field(..., min_length=1, description="Cle API Finnhub")
+
+
+@router.post("/finnhub/setup")
+async def setup_finnhub_initial(api_key: str):
+    """
+    Configuration initiale de Finnhub (sans OTP).
+
+    Finnhub ne necessite pas d'OTP car c'est une cle API gratuite.
+    Obtenir une cle gratuite sur: https://finnhub.io/register
+    """
+    config_service = get_config_service()
+
+    result = await config_service.update_finnhub(api_key)
+
+    if not result["success"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("error", "Erreur de configuration")
+        )
+
+    return result
+
+
+@router.delete("/finnhub")
+async def delete_finnhub():
+    """Supprime la configuration Finnhub."""
+    config_service = get_config_service()
+
+    result = await config_service.delete_finnhub()
+
+    if not result["success"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("error", "Erreur de suppression")
+        )
+
+    return result
+
+
+@router.post("/finnhub/test")
+async def test_finnhub_connection():
+    """
+    Teste la connexion a Finnhub avec la cle configuree.
+    """
+    import aiohttp
+
+    config_service = get_config_service()
+    creds = config_service.get_finnhub_credentials()
+
+    if not creds:
+        return {
+            "success": False,
+            "message": "Cle API Finnhub non configuree",
+        }
+
+    try:
+        api_key = creds["api_key"]
+        url = f"https://finnhub.io/api/v1/quote?symbol=AAPL&token={api_key}"
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get("c"):  # Current price
+                        return {
+                            "success": True,
+                            "message": "Connexion Finnhub reussie",
+                            "test_quote": {"symbol": "AAPL", "price": data.get("c")}
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "message": "Reponse invalide de Finnhub",
+                        }
+                elif response.status == 401:
+                    return {
+                        "success": False,
+                        "message": "Cle API invalide ou expiree",
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": f"Erreur Finnhub: HTTP {response.status}",
+                    }
+
+    except Exception as e:
+        logger.exception(f"Error testing Finnhub: {e}")
+        return {
+            "success": False,
+            "message": f"Erreur de connexion: {str(e)}",
+        }

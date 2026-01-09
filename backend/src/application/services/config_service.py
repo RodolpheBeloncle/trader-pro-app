@@ -57,11 +57,24 @@ class TelegramConfig:
 
 
 @dataclass
+class FinnhubConfig:
+    """Configuration Finnhub API."""
+    api_key: str = ""
+    configured: bool = False
+    updated_at: Optional[str] = None
+
+
+@dataclass
 class AppConfig:
     """Configuration globale de l'application."""
     saxo: SaxoConfig
     telegram: TelegramConfig
+    finnhub: FinnhubConfig = None
     version: str = "1.0"
+
+    def __post_init__(self):
+        if self.finnhub is None:
+            self.finnhub = FinnhubConfig()
 
 
 class ConfigService:
@@ -107,6 +120,7 @@ class ConfigService:
         """
         saxo_configured = bool(settings.SAXO_APP_KEY and settings.SAXO_APP_SECRET)
         telegram_configured = bool(settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID)
+        finnhub_configured = bool(settings.FINNHUB_API_KEY)
 
         return AppConfig(
             saxo=SaxoConfig(
@@ -122,6 +136,11 @@ class ConfigService:
                 chat_id=settings.TELEGRAM_CHAT_ID or "",
                 configured=telegram_configured,
                 updated_at=datetime.now().isoformat() if telegram_configured else None
+            ),
+            finnhub=FinnhubConfig(
+                api_key=settings.FINNHUB_API_KEY or "",
+                configured=finnhub_configured,
+                updated_at=datetime.now().isoformat() if finnhub_configured else None
             )
         )
 
@@ -158,6 +177,7 @@ class ConfigService:
                 self._config = AppConfig(
                     saxo=SaxoConfig(**data.get("saxo", {})),
                     telegram=TelegramConfig(**data.get("telegram", {})),
+                    finnhub=FinnhubConfig(**data.get("finnhub", {})),
                     version=data.get("version", "1.0")
                 )
                 logger.info("Configuration chargée depuis le fichier chiffré")
@@ -185,6 +205,7 @@ class ConfigService:
             data = {
                 "saxo": asdict(self._config.saxo),
                 "telegram": asdict(self._config.telegram),
+                "finnhub": asdict(self._config.finnhub),
                 "version": self._config.version
             }
 
@@ -221,6 +242,11 @@ class ConfigService:
                 "bot_token_preview": self._mask_value(config.telegram.bot_token),
                 "chat_id_preview": self._mask_value(config.telegram.chat_id),
                 "updated_at": config.telegram.updated_at
+            },
+            "finnhub": {
+                "configured": config.finnhub.configured,
+                "api_key_preview": self._mask_value(config.finnhub.api_key),
+                "updated_at": config.finnhub.updated_at
             }
         }
 
@@ -394,6 +420,55 @@ class ConfigService:
             "message": "Configuration Telegram supprimée"
         }
 
+    async def update_finnhub(self, api_key: str) -> Dict[str, Any]:
+        """
+        Met à jour la configuration Finnhub.
+
+        Args:
+            api_key: Clé API Finnhub
+
+        Returns:
+            Résultat de la mise à jour
+        """
+        config = self.load()
+
+        config.finnhub.api_key = api_key.strip() if api_key else ""
+        config.finnhub.configured = bool(config.finnhub.api_key)
+        config.finnhub.updated_at = datetime.now().isoformat()
+
+        if not self.save():
+            return {"success": False, "error": "Erreur lors de la sauvegarde"}
+
+        self._apply_to_runtime_settings()
+
+        return {
+            "success": True,
+            "message": "Configuration Finnhub mise à jour",
+            "configured": config.finnhub.configured
+        }
+
+    async def delete_finnhub(self) -> Dict[str, Any]:
+        """
+        Supprime la configuration Finnhub.
+
+        Returns:
+            Résultat de la suppression
+        """
+        config = self.load()
+
+        config.finnhub = FinnhubConfig()
+        config.finnhub.updated_at = datetime.now().isoformat()
+
+        if not self.save():
+            return {"success": False, "error": "Erreur lors de la sauvegarde"}
+
+        self._apply_to_runtime_settings()
+
+        return {
+            "success": True,
+            "message": "Configuration Finnhub supprimée"
+        }
+
     async def switch_saxo_environment(self, environment: str) -> Dict[str, Any]:
         """
         Bascule l'environnement Saxo (DEMO/LIVE).
@@ -487,6 +562,9 @@ class ConfigService:
             object.__setattr__(settings, 'TELEGRAM_BOT_TOKEN', self._config.telegram.bot_token)
             object.__setattr__(settings, 'TELEGRAM_CHAT_ID', self._config.telegram.chat_id)
 
+        if self._config.finnhub.configured:
+            object.__setattr__(settings, 'FINNHUB_API_KEY', self._config.finnhub.api_key)
+
     def get_saxo_credentials(self) -> Optional[Dict[str, str]]:
         """
         Récupère les credentials Saxo Bank (pour usage interne).
@@ -519,6 +597,21 @@ class ConfigService:
         return {
             "bot_token": config.telegram.bot_token,
             "chat_id": config.telegram.chat_id
+        }
+
+    def get_finnhub_credentials(self) -> Optional[Dict[str, str]]:
+        """
+        Récupère les credentials Finnhub (pour usage interne).
+
+        Returns:
+            Dictionnaire avec l'API key ou None
+        """
+        config = self.load()
+        if not config.finnhub.configured:
+            return None
+
+        return {
+            "api_key": config.finnhub.api_key
         }
 
 

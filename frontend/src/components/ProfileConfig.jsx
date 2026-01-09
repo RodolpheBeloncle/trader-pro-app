@@ -8,6 +8,9 @@ import {
   updateTelegramConfig,
   switchSaxoEnvironment,
   deleteCredentials,
+  setupFinnhubInitial,
+  deleteFinnhub,
+  testFinnhubConnection,
 } from '../api';
 
 // =============================================================================
@@ -701,6 +704,118 @@ function DeleteModal({ isOpen, onClose, onSubmit, loading, error, service, otpCo
 }
 
 // =============================================================================
+// MODALE FINNHUB
+// =============================================================================
+
+function FinnhubModal({ isOpen, onClose, onSetup, onDelete, onTest, loading, error, isConfigured }) {
+  const [apiKey, setApiKey] = useState('');
+  const [testResult, setTestResult] = useState(null);
+  const [testing, setTesting] = useState(false);
+
+  const handleSubmit = () => {
+    if (apiKey) {
+      onSetup(apiKey);
+    }
+  };
+
+  const handleTest = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await onTest();
+      setTestResult(result);
+    } catch (err) {
+      setTestResult({ success: false, message: err.message });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const resetForm = () => {
+    setApiKey('');
+    setTestResult(null);
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div style={styles.modal} onClick={() => { onClose(); resetForm(); }}>
+      <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
+        <h3 style={styles.modalTitle}>
+          {isConfigured ? 'Modifier Finnhub' : 'Configuration Finnhub'}
+        </h3>
+
+        <div style={styles.infoBox}>
+          <strong>Obtenir une cle API gratuite:</strong><br/>
+          1. Inscrivez-vous sur <a href="https://finnhub.io/register" target="_blank" rel="noreferrer" style={{ color: '#4CAF50' }}>finnhub.io</a><br/>
+          2. Copiez votre cle API depuis le dashboard<br/>
+          3. Limite gratuite: 60 requetes/minute
+        </div>
+
+        {error && <div style={styles.errorMessage}>{error}</div>}
+
+        {testResult && (
+          <div style={testResult.success ? styles.successMessage : styles.errorMessage}>
+            {testResult.message}
+            {testResult.test_quote && (
+              <span> (Test: {testResult.test_quote.symbol} = ${testResult.test_quote.price})</span>
+            )}
+          </div>
+        )}
+
+        <input
+          type="text"
+          style={styles.input}
+          placeholder="Cle API Finnhub (ex: d5ed48hr01qjckl...)"
+          value={apiKey}
+          onChange={e => setApiKey(e.target.value)}
+        />
+
+        <div style={styles.buttonGroup}>
+          <button
+            style={{ ...styles.button, ...styles.buttonSecondary }}
+            onClick={() => { onClose(); resetForm(); }}
+          >
+            Annuler
+          </button>
+
+          {isConfigured && (
+            <>
+              <button
+                style={{ ...styles.button, ...styles.buttonSecondary }}
+                onClick={handleTest}
+                disabled={testing}
+              >
+                {testing ? 'Test...' : 'Tester'}
+              </button>
+              <button
+                style={{ ...styles.button, ...styles.buttonDanger }}
+                onClick={() => { onDelete(); resetForm(); }}
+                disabled={loading}
+              >
+                Supprimer
+              </button>
+            </>
+          )}
+
+          <button
+            style={{
+              ...styles.button,
+              ...styles.buttonPrimary,
+              ...(!apiKey || loading ? styles.buttonDisabled : {})
+            }}
+            onClick={handleSubmit}
+            disabled={!apiKey || loading}
+          >
+            {loading ? 'En cours...' : (isConfigured ? 'Mettre a jour' : 'Configurer')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
 // COMPOSANT PRINCIPAL
 // =============================================================================
 
@@ -715,6 +830,9 @@ export default function ProfileConfig({ onClose }) {
   const [showSaxoModal, setShowSaxoModal] = useState(false);
   const [showSwitchEnvModal, setShowSwitchEnvModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(null); // 'saxo' ou 'telegram'
+  const [showFinnhubModal, setShowFinnhubModal] = useState(false);
+  const [finnhubLoading, setFinnhubLoading] = useState(false);
+  const [finnhubError, setFinnhubError] = useState(null);
 
   // OTP state
   const [otpCode, setOtpCode] = useState('');
@@ -886,6 +1004,44 @@ export default function ProfileConfig({ onClose }) {
     } finally {
       setActionLoading(false);
     }
+  };
+
+  // === FINNHUB ===
+
+  const handleFinnhubSetup = async (apiKey) => {
+    setFinnhubLoading(true);
+    setFinnhubError(null);
+    try {
+      await setupFinnhubInitial(apiKey);
+      setShowFinnhubModal(false);
+      setSuccess('Finnhub configure avec succes!');
+      setTimeout(() => setSuccess(null), 3000);
+      await loadStatus();
+    } catch (err) {
+      setFinnhubError(err.message);
+    } finally {
+      setFinnhubLoading(false);
+    }
+  };
+
+  const handleFinnhubDelete = async () => {
+    setFinnhubLoading(true);
+    setFinnhubError(null);
+    try {
+      await deleteFinnhub();
+      setShowFinnhubModal(false);
+      setSuccess('Finnhub supprime!');
+      setTimeout(() => setSuccess(null), 3000);
+      await loadStatus();
+    } catch (err) {
+      setFinnhubError(err.message);
+    } finally {
+      setFinnhubLoading(false);
+    }
+  };
+
+  const handleFinnhubTest = async () => {
+    return await testFinnhubConnection();
   };
 
   if (loading) {
@@ -1068,6 +1224,61 @@ export default function ProfileConfig({ onClose }) {
         )}
       </div>
 
+      {/* Section Finnhub */}
+      <div style={styles.section}>
+        <div style={styles.sectionHeader}>
+          <span style={styles.sectionTitle}>Finnhub API</span>
+          <StatusBadge configured={status?.finnhub?.configured} />
+        </div>
+
+        {status?.finnhub?.configured ? (
+          <>
+            <div style={styles.infoRow}>
+              <span style={styles.label}>Cle API</span>
+              <span style={styles.value}>{status.finnhub.api_key_preview}</span>
+            </div>
+            <div style={styles.infoRow}>
+              <span style={styles.label}>Derniere mise a jour</span>
+              <span style={styles.value}>
+                {status.finnhub.updated_at ? new Date(status.finnhub.updated_at).toLocaleString() : '-'}
+              </span>
+            </div>
+
+            <div style={styles.buttonGroup}>
+              <button
+                style={{ ...styles.button, ...styles.buttonSecondary }}
+                onClick={() => setShowFinnhubModal(true)}
+              >
+                Modifier
+              </button>
+              <button
+                style={{ ...styles.button, ...styles.buttonDanger }}
+                onClick={async () => {
+                  if (confirm('Supprimer la configuration Finnhub ?')) {
+                    await handleFinnhubDelete();
+                  }
+                }}
+              >
+                Supprimer
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={styles.infoBox}>
+              Configurez Finnhub pour acceder aux donnees de marche en temps reel.<br/>
+              Cle API gratuite disponible sur <a href="https://finnhub.io" target="_blank" rel="noreferrer" style={{ color: '#4CAF50' }}>finnhub.io</a>
+            </div>
+            <button
+              style={{ ...styles.button, ...styles.buttonPrimary }}
+              onClick={() => setShowFinnhubModal(true)}
+            >
+              Configurer Finnhub
+            </button>
+          </>
+        )}
+      </div>
+
       {/* Section Securite */}
       <div style={styles.section}>
         <div style={styles.sectionHeader}>
@@ -1141,6 +1352,20 @@ export default function ProfileConfig({ onClose }) {
         otpSent={otpSent}
         onRequestOTP={() => handleRequestOTP('delete_credentials')}
         otpLoading={otpLoading}
+      />
+
+      <FinnhubModal
+        isOpen={showFinnhubModal}
+        onClose={() => {
+          setShowFinnhubModal(false);
+          setFinnhubError(null);
+        }}
+        onSetup={handleFinnhubSetup}
+        onDelete={handleFinnhubDelete}
+        onTest={handleFinnhubTest}
+        loading={finnhubLoading}
+        error={finnhubError}
+        isConfigured={status?.finnhub?.configured}
       />
     </div>
   );
